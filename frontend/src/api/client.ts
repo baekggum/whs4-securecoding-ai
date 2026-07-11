@@ -4,11 +4,13 @@ const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 export class ApiError extends Error {
   status: number;
   details?: Record<string, string[] | undefined>;
+  code?: string;
 
-  constructor(status: number, message: string, details?: Record<string, string[] | undefined>) {
+  constructor(status: number, message: string, details?: Record<string, string[] | undefined>, code?: string) {
     super(message);
     this.status = status;
     this.details = details;
+    this.code = code;
   }
 }
 
@@ -61,13 +63,6 @@ async function request<T>(path: string, options: RequestOptions = {}, retryOnCsr
     credentials: "include",
   });
 
-  if (res.status === 403 && retryOnCsrfFailure && !SAFE_METHODS.has(method)) {
-    // Token may have expired/rotated (e.g. after login regenerated the
-    // session) — refresh once and retry before surfacing an error.
-    await ensureCsrfToken(true);
-    return request<T>(path, options, false);
-  }
-
   if (res.status === 204) {
     return undefined as T;
   }
@@ -75,8 +70,18 @@ async function request<T>(path: string, options: RequestOptions = {}, retryOnCsr
   const contentType = res.headers.get("content-type") ?? "";
   const data = contentType.includes("application/json") ? await res.json() : undefined;
 
+  // Only a real CSRF failure (server-tagged "CSRF_INVALID") gets the
+  // refresh-and-retry treatment — other 403s (IDOR ownership checks, room
+  // access denied, ...) are legitimate authorization failures that a token
+  // refresh can't fix, so they surface immediately instead of bouncing
+  // through an extra doomed request (backend/src/middleware/csrf.ts).
+  if (res.status === 403 && data?.code === "CSRF_INVALID" && retryOnCsrfFailure && !SAFE_METHODS.has(method)) {
+    await ensureCsrfToken(true);
+    return request<T>(path, options, false);
+  }
+
   if (!res.ok) {
-    throw new ApiError(res.status, data?.error ?? "요청에 실패했습니다.", data?.details);
+    throw new ApiError(res.status, data?.error ?? "요청에 실패했습니다.", data?.details, data?.code);
   }
 
   return data as T;

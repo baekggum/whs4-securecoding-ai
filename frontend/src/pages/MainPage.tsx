@@ -15,11 +15,13 @@ export function MainPage() {
   const [globalRoomId, setGlobalRoomId] = useState<string | null>(null);
 
   useEffect(() => {
-    productApi.listProducts().then(({ items, nextCursor }) => {
-      setProducts(items);
-      setCursor(nextCursor);
-      setLoading(false);
-    });
+    productApi
+      .listProducts()
+      .then(({ items, nextCursor }) => {
+        setProducts(items);
+        setCursor(nextCursor);
+      })
+      .finally(() => setLoading(false));
   }, []);
 
   useEffect(() => {
@@ -27,10 +29,13 @@ export function MainPage() {
       setGlobalRoomId(null);
       return;
     }
-    chatApi.listMyRooms().then(({ rooms }) => {
-      const globalRoom = rooms.find((r) => r.type === "global");
-      setGlobalRoomId(globalRoom?.id ?? null);
-    });
+    chatApi
+      .listMyRooms()
+      .then(({ rooms }) => {
+        const globalRoom = rooms.find((r) => r.type === "global");
+        setGlobalRoomId(globalRoom?.id ?? null);
+      })
+      .catch(() => setGlobalRoomId(null));
   }, [user]);
 
   async function loadMore() {

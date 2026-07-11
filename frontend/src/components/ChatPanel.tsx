@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useSocket } from "../context/SocketContext";
 import { useAuth } from "../context/AuthContext";
 import * as chatApi from "../api/chat";
+import { ApiError } from "../api/client";
 import type { ChatMessage } from "../types";
 
 interface Props {
@@ -24,9 +25,20 @@ export function ChatPanel({ roomId, title }: Props) {
   useEffect(() => {
     let cancelled = false;
     setMessages([]);
-    chatApi.getRoomMessages(roomId).then(({ messages: history }) => {
-      if (!cancelled) setMessages(history);
-    });
+    setError(null);
+    chatApi
+      .getRoomMessages(roomId)
+      .then(({ messages: history }) => {
+        if (!cancelled) setMessages(history);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setError(
+          err instanceof ApiError && err.status === 403
+            ? "채팅방에 접근할 권한이 없습니다."
+            : "채팅 내역을 불러오지 못했습니다."
+        );
+      });
     return () => {
       cancelled = true;
     };

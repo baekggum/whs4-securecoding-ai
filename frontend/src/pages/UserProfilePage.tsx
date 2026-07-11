@@ -29,7 +29,10 @@ export function UserProfilePage() {
         if (err instanceof ApiError && err.status === 404) setNotFound(true);
         else throw err;
       });
-    productApi.listProducts(undefined, id).then(({ items }) => setProducts(items));
+    productApi
+      .listProducts(undefined, id)
+      .then(({ items }) => setProducts(items))
+      .catch(() => setProducts([]));
   }, [id]);
 
   if (notFound) return <div className="empty-state">사용자를 찾을 수 없습니다.</div>;

@@ -1,7 +1,7 @@
 # 보안 구현 리포트
 
 작성자: 서연 (개발자)
-상태: 작성 중 (백엔드 구현 및 검증 완료, 프론트엔드 구현 진행 중 반영)
+상태: 코드 리뷰(태양) 1차 반영 완료
 
 이 문서는 `docs/architecture.md`(민준), `docs/research.md`(지훈)에서 지정한 보안 요구사항을
 실제로 어떻게 구현했는지, 그리고 로컬 환경에서 어떻게 동작을 검증했는지 정리합니다.
@@ -73,13 +73,23 @@
 - 쿠키 속성: `httpOnly`, `secure`(운영 환경), `sameSite: 'lax'`, `path: '/'`, rolling expiration 7일.
 - **세션 고정 방지**: 회원가입/로그인 성공 시 `req.session.regenerate()`로 세션 ID를 재발급 후 `userId`를 저장 (`backend/src/routes/auth.routes.ts`).
 - **즉시 무효화**: 매 요청마다 `attachCurrentUser` 미들웨어(`backend/src/middleware/auth.ts`)가 DB에서 최신 유저 status를 조회. `dormant`이거나 삭제된 유저면 세션을 즉시 파기하고 401 반환 — 신고 누적으로 휴면 처리된 직후의 요청부터 바로 차단됨.
-- 로그아웃 시 세션을 DB에서 완전히 삭제(`req.session.destroy`) 후 쿠키 clear.
+- 로그아웃 시 세션을 DB에서 완전히 삭제(`req.session.destroy`) 후 세션 쿠키와 CSRF 쿠키를 모두 clear (아래 12번 참고).
 - Socket.IO도 동일한 세션 미들웨어를 핸드셰이크에 재사용 (`backend/src/socket/index.ts`, `io.engine.use(sessionMiddleware)`) — 별도 토큰 발급 없이 REST와 동일한 세션 검증 로직 공유.
+
+**약점 (코드 리뷰에서 발견, Critical)**: 위 "즉시 무효화"는 REST 요청 경로에만 성립했다. Socket.IO 연결은 handshake 시 1회만 인증되고 이후 오래 유지되는 특성상, 이미 연결된 소켓은 그 유저가 신고 누적으로 `dormant` 전환되어도 세션/DB 재조회 없이 계속 채팅을 주고받을 수 있는 설계 공백이 있었다 (`docs/architecture.md` §5 "WebSocket 연결의 즉시 무효화 보강" 참고 — 태양 리뷰 → 민준이 설계 문서에 반영).
+
+**조치**:
+- 소켓 연결 시 전역 room뿐 아니라 유저별 개인 room `user:{userId}`에도 join (`backend/src/socket/index.ts`).
+- `report.service.ts`가 dormant 전환 트랜잭션을 커밋한 직후, REST 서비스 레이어가 Socket.IO 서버를 직접 참조하지 않도록 Node `EventEmitter` 기반 도메인 이벤트 `user:dormant`를 발행 (`backend/src/events.ts`) — 트랜잭션이 실제로 커밋된 뒤에만 발행하므로, 롤백 가능성이 있는 상태에서 소켓을 끊는 일이 없음.
+- 소켓 계층이 이 이벤트를 구독해 `io.in('user:'+userId).disconnectSockets(true)`로 해당 유저의 모든 연결을 즉시 강제 종료.
+- 프론트엔드는 `disconnect` 이벤트의 reason이 `"io server disconnect"`(서버가 명시적으로 끊은 경우에만 오는 값 — 네트워크 문제로 인한 재연결 케이스와 구분됨)일 때 사용자 상태를 재조회하고 로그인 페이지로 리다이렉트 (`frontend/src/context/SocketContext.tsx`).
+- 단일 프로세스 전제 — 다중 인스턴스로 확장 시 `EventEmitter`를 Redis Pub/Sub으로 교체 필요(현재 범위에서는 과설계라 문서에만 명시).
 
 **검증**:
 - 신고 3회로 유저를 휴면 전환시킨 직후, 그 유저의 기존 세션으로 `/api/users/me` 호출 시 401 확인.
 - 동일 계정으로 재로그인 시도 시 403 + "휴면 처리된 계정" 메시지 확인.
 - 세션 쿠키 없이 소켓 연결 시 `unauthorized`로 연결 거부, 쿠키 있을 때만 연결 성공 확인.
+- **소켓이 연결된 상태에서** 다른 계정 3개로 해당 유저를 신고해 임계치를 넘긴 직후, 소켓이 `disconnect` 이벤트를 `reason: "io server disconnect"`로 수신하며 즉시 끊기는 것을 실제 socket.io-client 스크립트로 확인(신고 3번째 요청의 HTTP 응답이 도착하기도 전에 disconnect가 발생할 정도로 즉각적).
 
 ---
 
@@ -170,12 +180,56 @@
 
 ---
 
+## 12. 코드 리뷰(태양) 반영 — Medium/Low
+
+### Medium: `startDirectRoom`의 TOCTOU 레이스
+
+**약점**: 두 유저 간 1:1 채팅방 생성은 "기존 방 조회 → 없으면 생성" 순서였는데(`backend/src/services/chat.service.ts`), 두 유저가 거의 동시에 채팅을 시작하면 둘 다 "없음"을 보고 각자 생성을 시도할 수 있음. `chat_rooms(userIdLow, userIdHigh)`에 UNIQUE 제약이 있어 데이터 중복 생성 자체는 막히지만, 나중에 커밋을 시도한 요청은 처리되지 않은 P2002 에러로 500이 발생했다.
+
+**조치**: 생성 트랜잭션에서 `P2002`를 잡아 "누군가 방금 막 생성했다"로 간주하고 해당 room을 다시 조회해 반환하도록 수정 — 동시성 상황에서도 항상 하나의 room으로 수렴하고 500이 발생하지 않음.
+
+**검증**: 두 유저가 서로에게 동시에 8개의 `POST /api/chat/rooms/direct` 요청을 보내는 스크립트로 재현 — 모두 201 응답, 반환된 room id가 전부 동일한 하나로 수렴, 500 없음을 확인.
+
+### Low: 로그아웃 시 CSRF 쿠키 미삭제
+
+**약점**: 로그아웃 시 세션 쿠키만 clear하고 CSRF 쿠키(`tsp.csrf`)는 남아있었다. CSRF 토큰이 세션에 종속되지 않는 자체 서명 방식이라 즉각적인 보안 구멍은 아니었지만, 로그아웃 이후에도 이전 토큰이 재사용 가능한 상태로 남는 것은 불필요한 위생 문제.
+
+**조치**: `backend/src/routes/auth.routes.ts`의 로그아웃 핸들러에서 세션 쿠키와 함께 CSRF 쿠키도 `clearCookie` 하도록 수정.
+
+**검증**: 로그아웃 응답의 `Set-Cookie` 헤더에 `tsp.sid=; Expires=...1970...`와 `tsp.csrf=; Expires=...1970...`가 모두 포함됨을 확인.
+
+### Low: 프론트엔드 403/에러 처리 누락 지점 보강
+
+**약점**: `MainPage`/`ChatRoomPage`/`ChatPanel`/`UserProfilePage`의 일부 데이터 fetch(`listMyRooms`, `getRoomMessages`, 상대방 판매 상품 목록)에 `.catch`가 없어, 403이나 네트워크 오류 시 콘솔에 unhandled rejection만 남고 사용자에게는 아무 피드백 없이 빈 화면으로 보일 수 있었다.
+
+**조치**: 각 지점에 `.catch`를 추가해 실패 시 안전한 기본 상태로 폴백하거나(빈 배열/방 없음), `ChatPanel`은 403일 때 "채팅방에 접근할 권한이 없습니다."라는 명확한 인라인 에러 메시지를 표시하도록 수정.
+
+### Low: 프론트엔드가 모든 403을 CSRF 실패로 간주하고 재시도
+
+**약점** (`frontend/src/api/client.ts`): mutating 요청이 403을 받으면 원인과 무관하게 무조건 CSRF 토큰을 재발급받아 1회 재시도했다. 상품 소유권 위반(IDOR 차단)이나 채팅방 접근 권한 없음도 403이므로, 이런 정상적인 인가 실패에도 불필요한 왕복 요청이 발생하고 에러 메시지 표시가 그만큼 지연됐다(보안 구멍은 아니고 UX/효율 문제).
+
+**조치**: 백엔드가 CSRF 실패에만 `code: "CSRF_INVALID"`를 응답 바디에 포함하도록 `HttpError`에 선택적 `code` 필드를 추가하고 `csrf.ts`가 이를 사용하도록 수정(`backend/src/lib/HttpError.ts`, `backend/src/middleware/csrf.ts`, `backend/src/middleware/errorHandler.ts`). 프론트 `api/client.ts`는 이제 응답 바디의 `code === "CSRF_INVALID"`일 때만 토큰을 재발급받아 재시도하고, 그 외 403(IDOR 등)은 즉시 에러로 표면화한다.
+
+**검증**: CSRF 토큰 없이 `PATCH /api/users/me` 호출 시 `{"error":"...","code":"CSRF_INVALID"}` 확인. 반면 소유하지 않은 상품을 유효한 CSRF 토큰으로 수정 시도(IDOR)하면 403이지만 `code` 필드가 없는 `{"error":"본인이 등록한 상품만 수정할 수 있습니다."}`만 반환됨을 확인 — 프론트가 이 경우 재시도하지 않고 바로 에러를 표시함.
+
+### Low: CSRF 토큰 최종 비교가 non-constant-time
+
+**약점** (`backend/src/middleware/csrf.ts`): 쿠키에 저장된 서명(HMAC) 검증은 `crypto.timingSafeEqual`을 쓰지만, 정작 쿠키 토큰과 헤더 토큰을 비교하는 마지막 단계는 일반 문자열 `!==` 비교였다. 토큰이 64자 hex라 실질적 익스플로잇 가능성은 낮지만, 같은 파일 안에서 타이밍 안전성 기준이 일관되지 않는 점을 리뷰에서 지적받음.
+
+**조치**: 헤더/쿠키 토큰을 `Buffer`로 변환 후 `crypto.timingSafeEqual`로 비교하는 `tokensMatch` 헬퍼를 추가(길이가 다르면 조기 반환 후 비교하지 않음 — `timingSafeEqual`은 길이가 다르면 예외를 던지므로).
+
+---
+
 ## 검증 완료 항목
 
 - [x] rate limiting 429 응답 실제 트리거 확인 — 동일 IP로 5회 연속 로그인 실패 시 5번째 요청부터 429 확인 (curl 반복 호출).
 - [x] 프로덕션 빌드 통과 확인 — `backend: tsc -p tsconfig.json`, `frontend: tsc --noEmit && vite build` 모두 에러 없이 통과.
 - [x] `dangerouslySetInnerHTML` 미사용 확인 — `frontend/src` 전체 grep, 실제 사용 코드 없음(주석에서만 언급).
 - [x] CSP 헤더가 실제로 응답에 포함되는지 확인 — `curl -I`로 `Content-Security-Policy: default-src 'self'; script-src 'self'; ...` 헤더 수신 확인.
+- [x] WebSocket 즉시 무효화(12번) — 연결된 소켓이 신고 임계치 초과 즉시 `io server disconnect`로 끊기는 것을 socket.io-client 스크립트로 확인.
+- [x] `startDirectRoom` TOCTOU 수정(12번) — 두 유저가 동시에 8회 요청해도 단일 room으로 수렴, 500 없음을 확인.
+- [x] 로그아웃 시 CSRF 쿠키 삭제(12번) — 로그아웃 응답의 `Set-Cookie`에 `tsp.sid`/`tsp.csrf` 둘 다 만료 처리됨을 확인.
+- [x] CSRF 실패에만 `code: "CSRF_INVALID"`가 붙는지 확인(12번) — CSRF 누락 요청은 code 포함 403, IDOR 소유권 위반은 code 없는 403으로 서로 다르게 응답됨을 curl로 확인.
 
 ## 남은 검증 (프론트엔드 화면 완성 후 진행 권장)
 

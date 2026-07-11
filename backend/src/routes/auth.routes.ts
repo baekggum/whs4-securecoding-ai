@@ -5,6 +5,7 @@ import * as authService from "../services/auth.service";
 import { requireAuth } from "../middleware/auth";
 import { authLimiter } from "../middleware/rateLimiters";
 import { env } from "../env";
+import { CSRF_COOKIE_NAME } from "../middleware/csrf";
 
 export const authRouter = Router();
 
@@ -56,6 +57,9 @@ authRouter.post(
         return;
       }
       res.clearCookie(env.SESSION_COOKIE_NAME, { path: "/" });
+      // Force the next login to obtain a fresh CSRF token rather than
+      // reusing one issued to the just-ended session's browser tab.
+      res.clearCookie(CSRF_COOKIE_NAME, { path: "/" });
       res.status(204).send();
     });
   })

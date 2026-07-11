@@ -8,6 +8,7 @@ import { FRONTEND_ORIGINS } from "../env";
 import { getOrCreateGlobalRoom, assertRoomAccess, saveMessage } from "../services/chat.service";
 import { joinRoomSchema, sendMessageSchema } from "../validators/chat.schema";
 import { HttpError } from "../lib/HttpError";
+import { domainEvents } from "../events";
 
 type Ack = ((response: { ok: boolean; message?: string }) => void) | undefined;
 
@@ -15,6 +16,10 @@ function errorMessage(err: unknown, fallback: string): string {
   if (err instanceof HttpError) return err.message;
   if (err instanceof ZodError) return "요청 형식이 올바르지 않습니다.";
   return fallback;
+}
+
+function personalRoom(userId: string): string {
+  return `user:${userId}`;
 }
 
 export function createSocketServer(httpServer: HttpServer) {
@@ -46,9 +51,21 @@ export function createSocketServer(httpServer: HttpServer) {
     next();
   });
 
+  // Handshake auth only runs once per connection, so a user who is later
+  // transitioned to dormant by a report (see report.service.ts) would
+  // otherwise stay connected and keep chatting until they reconnect. This
+  // listener force-disconnects every open socket for that user the moment
+  // the transition commits (docs/architecture.md §5 "즉시 무효화 보강").
+  // Single-process only — see the note in src/events.ts about Redis Pub/Sub
+  // if this ever runs as more than one instance.
+  domainEvents.onEvent("user:dormant", ({ userId }) => {
+    io.in(personalRoom(userId)).disconnectSockets(true);
+  });
+
   io.on("connection", (socket) => {
     const user = socket.data.user;
 
+    socket.join(personalRoom(user.id));
     void getOrCreateGlobalRoom().then((roomId) => socket.join(roomId));
 
     socket.on("join_room", async (payload: unknown, ack: Ack) => {

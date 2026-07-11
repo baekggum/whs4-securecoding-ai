@@ -9,9 +9,12 @@ export function ChatRoomPage() {
   const [room, setRoom] = useState<ChatRoomSummary | null>(null);
 
   useEffect(() => {
-    chatApi.listMyRooms().then(({ rooms }) => {
-      setRoom(rooms.find((r) => r.id === roomId) ?? null);
-    });
+    chatApi
+      .listMyRooms()
+      .then(({ rooms }) => {
+        setRoom(rooms.find((r) => r.id === roomId) ?? null);
+      })
+      .catch(() => setRoom(null));
   }, [roomId]);
 
   if (!roomId) return null;

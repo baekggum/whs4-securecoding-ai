@@ -44,6 +44,16 @@ function tokenFromCookiePair(cookieValue: unknown): string | null {
   return token;
 }
 
+function tokensMatch(cookieToken: string, headerToken: string): boolean {
+  const cookieBuf = Buffer.from(cookieToken);
+  const headerBuf = Buffer.from(headerToken);
+  // Length must match before timingSafeEqual (it throws on mismatched
+  // lengths) — comparing against a fixed-size buffer keeps this branch from
+  // leaking length information through timing either.
+  if (cookieBuf.length !== headerBuf.length) return false;
+  return crypto.timingSafeEqual(cookieBuf, headerBuf);
+}
+
 export function csrfProtection(req: Request, _res: Response, next: NextFunction) {
   if (SAFE_METHODS.has(req.method)) {
     next();
@@ -53,8 +63,11 @@ export function csrfProtection(req: Request, _res: Response, next: NextFunction)
   const cookieToken = tokenFromCookiePair(req.cookies?.[CSRF_COOKIE_NAME]);
   const headerToken = req.get(CSRF_HEADER_NAME);
 
-  if (!cookieToken || !headerToken || cookieToken !== headerToken) {
-    next(new HttpError(403, "유효하지 않은 요청입니다. 페이지를 새로고침한 후 다시 시도해주세요."));
+  if (!cookieToken || !headerToken || !tokensMatch(cookieToken, headerToken)) {
+    // Distinct machine-readable code so the frontend only retries after a
+    // token refresh on an actual CSRF failure, not on unrelated 403s like
+    // an IDOR ownership check (frontend/src/api/client.ts).
+    next(new HttpError(403, "유효하지 않은 요청입니다. 페이지를 새로고침한 후 다시 시도해주세요.", "CSRF_INVALID"));
     return;
   }
 

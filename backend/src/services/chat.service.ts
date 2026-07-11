@@ -1,3 +1,4 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "../prisma";
 import { HttpError } from "../lib/HttpError";
 
@@ -41,18 +42,35 @@ export async function startDirectRoom(userId: string, targetUserId: string) {
   });
   if (existing) return existing;
 
-  return prisma.$transaction(async (tx) => {
-    const room = await tx.chatRoom.create({
-      data: { type: "direct", userIdLow, userIdHigh },
+  // TOCTOU: two concurrent requests for the same pair can both pass the
+  // findUnique check above and both reach here. The DB's
+  // UNIQUE(userIdLow, userIdHigh) constraint lets only one INSERT win; the
+  // loser's transaction throws P2002 instead of silently creating a
+  // duplicate room. Treat that as "someone else just created it" and
+  // return the now-existing row, so startDirectRoom stays idempotent under
+  // concurrency instead of surfacing a 500.
+  try {
+    return await prisma.$transaction(async (tx) => {
+      const room = await tx.chatRoom.create({
+        data: { type: "direct", userIdLow, userIdHigh },
+      });
+      await tx.chatRoomParticipant.createMany({
+        data: [
+          { roomId: room.id, userId },
+          { roomId: room.id, userId: targetUserId },
+        ],
+      });
+      return room;
     });
-    await tx.chatRoomParticipant.createMany({
-      data: [
-        { roomId: room.id, userId },
-        { roomId: room.id, userId: targetUserId },
-      ],
-    });
-    return room;
-  });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2002") {
+      const room = await prisma.chatRoom.findUnique({
+        where: { userIdLow_userIdHigh: { userIdLow, userIdHigh } },
+      });
+      if (room) return room;
+    }
+    throw err;
+  }
 }
 
 export async function listMyRooms(userId: string) {

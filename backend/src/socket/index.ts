@@ -66,7 +66,19 @@ export function createSocketServer(httpServer: HttpServer) {
     const user = socket.data.user;
 
     socket.join(personalRoom(user.id));
-    void getOrCreateGlobalRoom().then((roomId) => socket.join(roomId));
+    // getOrCreateGlobalRoom() is cached after server boot (server.ts awaits
+    // it once before listen()), so this is normally synchronous-fast — but
+    // an uncaught rejection here (e.g. a transient DB hiccup) would
+    // otherwise be an unhandled promise rejection, which crashes the whole
+    // Node process by default and takes down every in-flight request, not
+    // just this connection's. Always terminate the chain with .catch().
+    getOrCreateGlobalRoom()
+      .then((roomId) => socket.join(roomId))
+      .catch((err) => {
+        // eslint-disable-next-line no-console
+        console.error("Failed to join global chat room:", err instanceof Error ? err.message : err);
+        socket.emit("error", { code: "global_room_join_failed", message: "전체채팅방 입장에 실패했습니다." });
+      });
 
     socket.on("join_room", async (payload: unknown, ack: Ack) => {
       try {

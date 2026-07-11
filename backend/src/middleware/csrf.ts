@@ -1,6 +1,6 @@
 import crypto from "crypto";
 import type { NextFunction, Request, Response } from "express";
-import { env } from "../env";
+import { env, COOKIE_SECURE_EFFECTIVE } from "../env";
 import { HttpError } from "../lib/HttpError";
 
 // Double-submit cookie CSRF protection (see docs/architecture.md §6 and
@@ -20,7 +20,7 @@ export function issueCsrfCookie(res: Response): string {
   const cookieValue = `${token}.${sign(token)}`;
   res.cookie(CSRF_COOKIE_NAME, cookieValue, {
     httpOnly: false, // frontend JS must read this to echo it back in a header
-    secure: env.COOKIE_SECURE,
+    secure: COOKIE_SECURE_EFFECTIVE,
     sameSite: "lax",
     path: "/",
     maxAge: env.SESSION_MAX_AGE_MS,

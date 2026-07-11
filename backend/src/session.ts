@@ -1,7 +1,7 @@
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { Pool } from "pg";
-import { env } from "./env";
+import { env, COOKIE_SECURE_EFFECTIVE } from "./env";
 
 const PgSession = connectPgSimple(session);
 
@@ -22,7 +22,7 @@ export const sessionMiddleware = session({
   rolling: true,
   cookie: {
     httpOnly: true,
-    secure: env.COOKIE_SECURE,
+    secure: COOKIE_SECURE_EFFECTIVE,
     sameSite: "lax",
     path: "/",
     maxAge: env.SESSION_MAX_AGE_MS,

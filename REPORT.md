@@ -1,7 +1,7 @@
 # 보안 구현 리포트
 
 작성자: 서연 (개발자)
-상태: 코드 리뷰(태양) 1차 반영 완료 + 종합 재검증(13번) 완료
+상태: 코드 리뷰(태양) 1차 반영 완료 + 종합 재검증(13번) 완료 + Windows 실사용 버그 2건 수정 및 리뷰 반영 완료(14번)
 
 이 문서는 `docs/architecture.md`(민준), `docs/research.md`(지훈)에서 지정한 보안 요구사항을
 실제로 어떻게 구현했는지, 그리고 로컬 환경에서 어떻게 동작을 검증했는지 정리합니다.
@@ -267,6 +267,105 @@ API/WebSocket 레벨에서 아래 세 가지를 재검증했습니다. 백엔드
 `skipSuccessfulRequests`가 없으므로 409로 끝난 요청도 카운트에 포함된다는 점까지 실측으로 확인.
 
 **결론**: 세 항목 모두 통과. 코드 수정 없음(순수 검증 라운드).
+
+---
+
+## 14. 실사용 중 발견된 버그 (Windows/PowerShell 환경 리포트)
+
+브라우저 자동화 없이 코드 레벨 분석 + API/소켓 레벨 재현으로 원인을 진단하고 수정했습니다.
+
+### 버그 1: 로그인은 성공하지만 이후 요청이 계속 401
+
+**증상**: 로그인 응답(200)은 정상 수신되어 프론트는 로그인된 것처럼 보이지만, 이후 `GET /api/users/me`,
+`GET /api/chat/rooms` 등이 계속 401 — 세션이 실제로는 유지되지 않음.
+
+**원인 분석**: 로그인 요청 자체가 성공했다는 사실(HTTP 200 + 정상 JSON 응답)이 CORS/Origin 불일치 가능성을
+사실상 배제한다 — Origin이 허용 목록과 다르면 브라우저가 응답 자체를 fetch 단계에서 차단하므로, 프론트 코드상
+`ApiError`가 아닌 일반 `TypeError`로 잡혀 "로그인에 실패했습니다" 배너가 뜨는데, 보고된 증상은 그게 아니었다.
+반면 **로그인 POST의 HTTP 레벨 성공 여부와 브라우저의 쿠키 저장 여부는 서로 독립적**이다 — 응답 바디는 정상
+수신되어도, `Set-Cookie`에 `Secure` 속성이 붙어 있으면 브라우저는 **HTTPS가 아닌 연결에서는 그 쿠키를 조용히
+버린다**(에러도, 콘솔 경고도 없음). 이는 정확히 "로그인은 성공했는데 이후 요청에 세션이 없다"는 증상과 일치한다.
+`backend/.env.example`/README는 운영(HTTPS) 환경에서 `COOKIE_SECURE=true`를 설정하라고 안내하는데, 로컬에서도
+"보안을 위해" 그대로 켜두거나 프로덕션용 `.env`를 실수로 재사용하면 이 문제가 재현된다 — `session.ts`/`csrf.ts`가
+`env.COOKIE_SECURE` 값을 아무 조건 없이 그대로 `secure` 옵션에 넘기고 있어, 이런 설정 실수를 코드가 전혀
+방어하지 못했다.
+
+**조치**: `.env`의 `COOKIE_SECURE` 값과 무관하게, **`NODE_ENV`가 실제로 `"production"`일 때만** `Secure`
+속성을 적용하도록 변경(`backend/src/env.ts`의 `COOKIE_SECURE_EFFECTIVE` 계산값을 `session.ts`/`middleware/csrf.ts`
+양쪽에서 사용). 로컬/개발 환경에서는 `Secure`가 어떤 상황에서도 도움이 되지 않고(HTTPS가 아니므로) 오히려
+이런 식으로 인증을 조용히 깨뜨리기만 하므로, `.env` 설정 실수를 코드 레벨에서 원천 차단한 것. 운영 환경에서
+`COOKIE_SECURE=true`를 빼먹은 경우엔 반대로 서버 시작 로그에 경고를 출력(`env.ts`). 추가로 서버 기동 시
+`[env] cookies: secure=... sameSite=lax; allowed frontend origin(s): ...` 형태로 실제 적용된 쿠키/오리진 설정을
+로그로 남기도록 해(`server.ts`), 다음에 비슷한 증상이 재발해도 서버 로그만으로 즉시 원인을 좁힐 수 있게 함.
+`FRONTEND_ORIGIN`에 트레일링 슬래시가 붙어 Origin 헤더와 미스매치되는 경우도 함께 방어(문자열 끝 `/` 제거).
+
+**검증**: 로컬(`NODE_ENV=development`)에서 `.env`의 `COOKIE_SECURE`를 의도적으로 `true`로 바꾸고 재기동 →
+기동 로그에 `secure=false`로 정정 적용됨을 확인, 실제 `Set-Cookie` 응답 헤더(CSRF/세션 쿠키 둘 다)에
+`Secure` 속성이 없음을 curl로 직접 확인(수정 전이었다면 `Secure`가 붙어 실제 브라우저에서 저장되지 않았을
+상황). 반대로 `NODE_ENV=production` + `COOKIE_SECURE=true`로 기동 시 로그가 `secure=true`로 정확히 나오는
+것도 확인해, 운영 환경에서 의도한 동작이 깨지지 않았음을 함께 검증.
+
+### 버그 2: 사진 첨부 상품등록 시 `net::ERR_CONNECTION_RESET` (서버 프로세스 다운 의심)
+
+**원인 분석**: 클라이언트에서 정상 에러 응답이 아니라 커넥션 자체가 리셋된다는 것은, 그 요청을 처리하던 Node
+프로세스가 **응답을 만들기도 전에 죽었다**는 강한 신호다(정상적인 500 에러라면 TCP 연결은 살아있는 채로 응답이
+전달된다). 코드 전체를 감사한 결과 실제로 **처리되지 않은 프라미스 거부(unhandled rejection)** 가 발견됨:
+`backend/src/socket/index.ts`에서 소켓 연결 시 `void getOrCreateGlobalRoom().then(...)`로 결과만 처리하고
+실패(`.catch`)는 처리하지 않고 있었다. Node 15+ 기본 동작상 unhandled rejection은 **프로세스 전체를 강제
+종료**시키며, 이 경우 마침 진행 중이던 다른 모든 요청(예: 이미지 업로드)의 TCP 연결도 함께 끊겨
+`ERR_CONNECTION_RESET`으로 보이게 된다. 이 경로는 서버 기동 시 `getOrCreateGlobalRoom()`을 미리 호출해
+캐시해두므로 평소엔 거의 발동하지 않지만(캐시 히트 시 동기 반환), DB 순단 등 일시적 오류가 겹치면 이 방식대로
+전체 프로세스가 죽을 수 있는 잠재적 결함이었다. 추가로 `sharp`의 실제 이미지 디코딩 단계는 별도 `try/catch`
+없이 그대로 프로미스 체인에 얹혀 있었는데, 정상적인 프라미스 거부라면 `asyncHandler`가 잡아 500으로
+전환하지만, 손상된 파일이나 (특히 Windows처럼) 플랫폼별 네이티브 바이너리 문제 시 발생할 수 있는 예외를 좀 더
+명확한 메시지로 안전하게 흡수하는 계층이 없었다. 프로세스 레벨 안전망(`uncaughtException`/`unhandledRejection`
+핸들러) 자체도 전무했다.
+
+**조치**:
+1. `socket/index.ts`의 `getOrCreateGlobalRoom().then(...)`에 `.catch()`를 추가해 실패해도 해당 소켓에만
+   에러 이벤트를 보내고 프로세스는 계속 살아있도록 수정.
+2. `backend/src/server.ts`에 `process.on("unhandledRejection", ...)`와 `process.on("uncaughtException", ...)`
+   핸들러를 추가. 최초 구현에서는 uncaughtException도 로그만 남기고 계속 서비스하도록 했었는데, 태양 리뷰에서
+   "uncaughtException은 예외가 어떤 프레임(DB 커넥션 등)을 뚫고 나왔는지 보장할 수 없는 상태이므로, 계속
+   서비스하면 오히려 오염된 상태로 계속 응답할 위험(DB 커넥션 풀 오염 등)이 있다"는 지적을 받고 재작업함 —
+   지금은 uncaughtException 발생 시 로그를 남긴 뒤 `httpServer.close()`(진행 중이던 요청은 끝까지 응답)
+   → `prisma.$disconnect()` → `process.exit(1)` 순서로 정리 종료하며, 종료가 멈춰버리는 상황(idle
+   keep-alive 커넥션 등으로 `close()`가 끝나지 않는 경우)에 대비한 5초 강제종료 타이머를 안전망으로 둔다.
+   `unhandledRejection`은 (프라미스 거부는 이런 상태 오염 우려가 없으므로) 로그만 남기고 계속 서비스하는
+   기존 방식을 유지. 이 변경으로 **운영 배포 시에는 반드시 프로세스가 죽었을 때 자동으로 재기동해주는
+   supervisor(pm2, Docker `restart: unless-stopped`, systemd `Restart=on-failure` 등)가 앞단에 있어야 함** —
+   README에 배포 주의사항으로 추가. 진짜 네이티브 모듈 세그폴트는 어느 쪽 핸들러로도 JS 레벨에서 잡을 수
+   없다는 한계는 동일하게 남아있음.
+3. `backend/src/upload/imageProcessor.ts`의 `sharp` 파이프라인을 `try/catch`로 감싸, 실패 시 스택트레이스를
+   서버 로그에만 남기고 클라이언트에는 안전한 422 메시지("이미지 처리 중 오류가 발생했습니다...")로 응답하도록
+   변경. sharp가 던지는 원인 불명의 에러가 무엇이든(손상된 파일이든 네이티브 바인딩 문제든) 최소한 프로세스를
+   죽이지 않고 정상적인 HTTP 에러로 전환됨을 보장.
+4. 서버 기동 시 `checkSharpAvailable()`로 1x1 합성 PNG를 실제로 sharp에 통과시켜보는 self-check을 추가.
+   sharp는 OS/아키텍처별 네이티브(libvips) 바이너리를 쓰는데, 이 프로젝트가 서로 다른 머신 간에 공유되는
+   네트워크 드라이브 등을 통해 `node_modules`가 통째로 복사·공유된 경우(실사용자가 `F:\` 드라이브에서
+   실행했다는 점이 이 가능성을 시사) 네이티브 바인딩이 깨져 있을 수 있는데, 그런 경우 첫 상품 등록 시도에서야
+   당황스럽게 발견되는 대신 서버 기동 로그에 바로 원인과 대응 방법("node_modules와 package-lock.json을 지우고
+   이 머신에서 직접 `npm install`을 다시 실행하라")을 안내하도록 함.
+
+**검증**:
+- 정상 jpg 파일 업로드가 수정 후에도 여전히 201로 정상 처리됨을 확인(회귀 없음).
+- 매직바이트 검사는 통과하지만(`FF D8 FF` 헤더) 실제로는 손상된 JPEG 바이트를 업로드해 `sharp`가 디코딩
+  단계에서 실제로 예외(`VipsJpeg: Premature end of input file`)를 던지는 상황을 재현 — 이전이었다면 처리
+  방식에 따라 위험했을 상황이 이제는 서버 로그에 스택트레이스가 남고 클라이언트에는 422 응답만 반환되며,
+  **서버 프로세스는 계속 정상 응답**(`/health` 200)함을 확인.
+- 소켓 연결 → 전체채팅방 자동 join → 메시지 송수신까지 `.catch()` 추가 이후에도 정상 동작함을 재확인(회귀 없음).
+- graceful shutdown 로직(동일한 close→disconnect→exit 패턴)을 독립된 재현 스크립트로 검증: 처리 중인 요청이 있는
+  상태에서 `uncaughtException`을 발생시켰을 때 그 요청이 끝까지 정상 응답된 뒤에야 프로세스가 종료 코드 1로
+  종료됨을 확인(강제종료 타이머가 불필요하게 발동하지 않음도 함께 확인).
+- (태양 재검토 반영) 채팅이 핵심 기능이라 종료 시점에 열려있는 WebSocket이 흔한데, `httpServer.close()`만으로는
+  이미 업그레이드된 소켓 연결이 끊기지 않아 5초 강제종료 타이머가 "예외적 안전망"이 아니라 "매번 타는 경로"가
+  될 수 있다는 지적을 받고, `shutdown()` 시작 시 `io.close()`로 소켓을 먼저 정리하도록 추가 — 채팅 유저가 있어도
+  대부분 5초를 다 기다리지 않고 종료되도록 개선.
+- 서버 기동 로그에 sharp self-check가 정상 통과 시 아무 것도 출력하지 않고(현재 이 검증 환경에서는 sharp가
+  정상 동작하므로 조용히 통과), 실패 조건을 인위적으로 만들어보진 않았지만 self-check 함수 자체는 정상 이미지
+  처리 경로와 동일한 `sharp()` 호출 패턴을 사용하므로 신뢰 가능.
+
+---
 
 ## 검증 환경
 

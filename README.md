@@ -90,7 +90,13 @@ npm run build:frontend
 백엔드는 `backend/dist`, 프론트엔드는 `frontend/dist`에 정적 파일이 생성됩니다.
 프로덕션 배포 시 프론트엔드와 백엔드가 **같은 등록 가능 도메인(registrable domain)** 아래에 있어야
 세션 쿠키의 `SameSite=Lax`가 정상 동작합니다 (예: `app.example.com` + `api.example.com`, 또는 리버스 프록시로
-동일 오리진처럼 묶기).
+동일 오리진처럼 묶기). `COOKIE_SECURE=true`도 함께 설정해야 합니다(HTTPS 필수).
+
+**프로세스 매니저 필수**: 백엔드는 `uncaughtException` 발생 시 진행 중인 요청을 마무리한 뒤 **의도적으로
+프로세스를 종료**합니다(예외가 어떤 상태를 거쳐 나왔는지 보장할 수 없는 상황에서 계속 서비스하는 것보다,
+깨끗하게 재시작하는 편이 안전하다는 판단 — REPORT.md §14 참고). 따라서 운영 환경에서는 반드시
+pm2, Docker `restart: unless-stopped`, systemd `Restart=on-failure` 등 **자동 재기동 supervisor**를 앞단에
+두어야 합니다. `node dist/server.js`를 감독 없이 직접 실행하면 이런 종료 후 서비스가 복구되지 않습니다.
 
 ## 알려진 제약 / 트레이드오프
 
@@ -101,6 +107,10 @@ npm run build:frontend
   이는 **dev 서버에만 해당하는 이슈**(임의 사이트가 dev 서버에 요청을 보낼 수 있음)로 프로덕션 빌드 결과물에는
   영향이 없습니다. dev 서버를 신뢰되지 않은 네트워크에 노출하지 마세요(기본값은 localhost 바인딩).
 - 신고 임계치는 `backend/.env`의 `PRODUCT_REPORT_THRESHOLD`, `USER_REPORT_THRESHOLD`로 운영 중 조정 가능합니다.
+- **Windows에서 실행 시**: `node_modules`를 다른 OS/머신에서 설치한 뒤 복사하거나 네트워크 드라이브로 공유해서
+  쓰지 마세요 — `sharp`는 OS/아키텍처별 네이티브 바이너리를 쓰기 때문에, 다른 환경에서 설치된 `node_modules`를
+  그대로 가져오면 이미지 업로드가 실패합니다(서버 기동 로그에 self-check 경고가 뜹니다). Windows 머신에서
+  직접 `npm install`을 실행하세요. 자세한 진단 과정은 [`REPORT.md`](./REPORT.md) 14번 항목 참고.
 
 ## 주요 스크립트
 

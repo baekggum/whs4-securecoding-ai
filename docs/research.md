@@ -334,6 +334,173 @@ app.post("/api/login", loginLimiter, loginHandler);
 
 ---
 
+## 8. 유저간 송금/포인트 시스템 (미니 결제) 구현 베스트 프랙티스
+
+> 전제: 기존 스택(PostgreSQL + Prisma, UUID PK)을 그대로 사용한다고 가정. `docs/architecture.md`에서 아직 송금 기능의 스키마/API가 확정되지 않았으므로, 이 섹션은 설계 시 참고할 패턴 조사입니다.
+
+### 8-1. DB 레벨 동시성 안전 처리
+
+같은 사용자의 잔액을 두 요청이 동시에 차감/증액하면 lost update가 발생할 수 있습니다(예: 잔액 1000원에서 동시에 두 건의 700원 송금이 각각 "잔액 충분"으로 판단해 통과 → 잔액이 음수가 됨). 방어 방법 두 가지를 조합합니다.
+
+**(1) 행 잠금(`SELECT ... FOR UPDATE`)** — 잔액을 읽고 검증한 뒤 갱신하는 구간 전체를 잠가서, 같은 행에 대한 동시 트랜잭션을 직렬화합니다. Prisma는 아직 `FOR UPDATE`를 표준 쿼리 API로 지원하지 않으므로 `$transaction` 콜백 안에서 `$queryRaw`로 직접 실행해야 합니다.
+
+```ts
+await prisma.$transaction(async (tx) => {
+  // 두 사용자 행을 잠금 — 데드락 방지를 위해 항상 정렬된 순서로 잠금 획득
+  const [firstId, secondId] = [fromUserId, toUserId].sort();
+  await tx.$queryRaw`SELECT id FROM users WHERE id = ${firstId} FOR UPDATE`;
+  await tx.$queryRaw`SELECT id FROM users WHERE id = ${secondId} FOR UPDATE`;
+
+  const sender = await tx.user.findUniqueOrThrow({ where: { id: fromUserId } });
+  if (sender.balance < amount) {
+    throw new HttpError(400, "잔액이 부족합니다");
+  }
+  // ... 잔액 갱신
+});
+```
+
+- **잠금 순서를 항상 동일하게(예: id 정렬) 유지**하는 것이 중요합니다. A→B 송금과 B→A 송금이 동시에 발생할 때 서로 다른 순서로 잠그면 데드락이 발생합니다.
+
+**(2) 트랜잭션 격리 수준 상향** — 행 잠금 대신(또는 함께) Prisma `$transaction`의 `isolationLevel`을 `Serializable`로 올리는 방법도 가능합니다. 잔액 같은 금전 불변식(invariant) 보호에는 `Serializable`이 안전하지만, 충돌 시 트랜잭션이 재시도 가능한 에러로 실패하므로 애플리케이션에서 재시도 로직이 필요합니다.
+
+```ts
+await prisma.$transaction(
+  async (tx) => {
+    /* 잔액 검증 + 갱신 */
+  },
+  { isolationLevel: Prisma.TransactionIsolationLevel.Serializable }
+);
+```
+
+- 실무적으로는 **명시적 `FOR UPDATE` 잠금 방식이 더 예측 가능**(대기만 하고 실패하지 않음)하여 송금처럼 "성공 아니면 명확한 사유로 거부"가 요구되는 기능에 더 적합하다는 의견이 우세합니다. `Serializable`은 재시도 로직이 번거로울 수 있어 큐 처리 등 다른 도메인에 더 어울립니다.
+
+### 8-2. 이중지출 / 음수 잔액 방지 패턴
+
+애플리케이션 레벨 검증만으로는 버그·경쟁 상태에 취약하므로 **DB 제약을 최후 방어선으로 반드시 추가**합니다.
+
+```sql
+-- prisma/migrations/xxx_add_balance_check/migration.sql
+ALTER TABLE users ADD COLUMN balance INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE users ADD CONSTRAINT balance_non_negative CHECK (balance >= 0);
+```
+
+- Prisma 스키마 DSL은 CHECK 제약을 직접 표현하지 못하므로, 마이그레이션 SQL 파일에 수동으로 추가해야 합니다(`prisma migrate dev`로 생성된 마이그레이션 파일 편집).
+- 이 제약이 있으면 애플리케이션 로직에 버그가 있어도(예: 잠금 없이 잔액을 차감하는 코드 경로가 실수로 추가됨) **DB가 물리적으로 음수 잔액을 거부**하여 최소한 데이터 무결성은 보장됩니다. 애플리케이션은 이 제약 위반을 잡아 "잔액 부족" 에러로 변환해 사용자에게 안내.
+
+### 8-3. 멱등성 키(Idempotency Key)
+
+네트워크 재시도, 이중 클릭, 클라이언트 재전송 등으로 동일한 송금 요청이 두 번 도착해도 **실제 송금은 한 번만 일어나야** 합니다.
+
+- **패턴**: 클라이언트가 송금 "의도(intent)"마다 UUID를 하나 생성해 요청에 포함(`Idempotency-Key` 헤더 또는 바디 필드). 서버는 이 값을 DB에 **UNIQUE 제약**을 건 컬럼으로 저장. 동일 키로 재요청이 오면 새로 처리하지 않고 **이전 처리 결과를 그대로 반환**.
+- 애플리케이션 메모리(예: 단순 캐시)만으로 중복 체크를 하면 동시 요청이나 서버 재시작 시 무력화되므로, **반드시 DB 유니크 제약으로 뒷받침**해야 합니다.
+
+```prisma
+model Transfer {
+  id           String   @id @default(uuid()) // = 클라이언트가 생성한 idempotency key
+  fromUserId   String   @map("from_user_id")
+  toUserId     String   @map("to_user_id")
+  amount       Int
+  status       TransferStatus @default(completed)
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@map("transfers")
+}
+```
+
+```ts
+async function transferPoints(input: TransferInput) {
+  // 클라이언트가 보낸 idempotency key(= id)로 먼저 조회
+  const existing = await prisma.transfer.findUnique({ where: { id: input.idempotencyKey } });
+  if (existing) return existing; // 이미 처리된 요청 — 그대로 결과 반환, 재송금 안 함
+
+  return prisma.$transaction(async (tx) => {
+    // ... 8-1의 잠금 + 잔액 검증 ...
+    return tx.transfer.create({
+      data: { id: input.idempotencyKey, fromUserId, toUserId, amount },
+    });
+  });
+}
+```
+
+- 동시에 같은 키로 두 요청이 레이스하는 경우까지 막으려면, `findUnique` 선조회 대신 **`create` 시도 → 유니크 제약 위반(P2002) catch → 기존 레코드 재조회** 방식이 더 안전합니다(선조회-후생성 사이 TOCTOU 창을 없앰).
+
+### 8-4. 원장(Ledger) 테이블 설계 패턴
+
+**캐시된 잔액 컬럼 + append-only 원장**을 함께 두는 것이 표준적인 패턴입니다.
+
+- `users.balance` (또는 별도 `wallets` 테이블): 현재 잔액을 캐싱한 컬럼. 매 조회마다 이력을 합산할 필요 없이 O(1)로 잔액을 읽기 위함.
+- `point_transactions` (원장, ledger): 모든 잔액 변동을 **불변(append-only)** 기록. 감사 추적(audit trail), 잔액 정합성 검증, 분쟁 발생 시 근거자료로 사용.
+- 두 값은 **반드시 같은 DB 트랜잭션 안에서 함께 갱신**되어야 정합성이 깨지지 않습니다(캐시만 갱신하고 원장 기록이 누락되는 경우가 가장 흔한 버그).
+
+```prisma
+enum PointTransactionType {
+  transfer_out
+  transfer_in
+}
+
+model PointTransaction {
+  id            String               @id @default(uuid())
+  transferId    String               @map("transfer_id") // 8-3의 Transfer.id — 송금 1건당 2개 row(양방향) 연결
+  userId        String               @map("user_id")
+  counterpartyId String              @map("counterparty_id")
+  type          PointTransactionType
+  amount        Int                  // 부호로 방향 표현: 차감은 음수, 수령은 양수
+  balanceAfter  Int                  @map("balance_after") // 이 기록 시점의 해당 유저 잔액 스냅샷
+  createdAt     DateTime             @default(now()) @map("created_at")
+
+  @@index([userId, createdAt])
+  @@map("point_transactions")
+}
+```
+
+- 송금 1건 = 원장에 **2개 row**(송금자 `-amount`, 수신자 `+amount`)를 같은 `transferId`로 남기는 더블 엔트리 방식을 권장. 마이페이지에서 "내 송금/수령 내역"을 보여줄 때도 자연스럽게 조회 가능.
+- `balanceAfter`를 각 원장 row에 스냅샷으로 남겨두면, 이후 "그 시점 잔액이 맞았는지" 재계산 없이 바로 감사 가능.
+- 정합성 검증(선택, 운영 단계): 주기적으로 `SUM(point_transactions.amount) WHERE userId = X` 와 `users.balance`가 일치하는지 배치로 검증하는 정합성 체크 잡을 두면 캐시-원장 불일치를 조기에 발견 가능.
+
+**참고**: [Prisma Transactions 공식 문서](https://www.prisma.io/docs/orm/prisma-client/queries/transactions), [Row update with DB Row Lock · prisma/prisma#1918](https://github.com/prisma/prisma/issues/1918), [Fixing Race Conditions in PostgreSQL for Financial Systems](https://thedanieldallas.com/thoughts/postgresql-race-conditions), [Idempotency Keys: Your API's Safety Net](https://dev.to/leonardkachi/idempotency-keys-your-apis-safety-net-against-chaos-j1b), [Designing Ledgers API with Concurrency Control - Modern Treasury](https://www.moderntreasury.com/journal/designing-ledgers-with-optimistic-locking)
+
+---
+
+## 9. 상품 검색 구현 방식 (ILIKE vs 풀텍스트 검색)
+
+### 비교
+
+| 방식 | 원리 | 장점 | 단점 |
+|---|---|---|---|
+| **`ILIKE '%keyword%'`** (B-tree 인덱스 무력화) | 단순 대소문자 무시 부분 문자열 매칭 | 구현 극도로 단순, Prisma `contains` + `mode: 'insensitive'`로 그대로 매핑 | 테이블이 커지면 항상 풀스캔 → 느려짐(수십만 행부터 체감) |
+| **`pg_trgm` + GIN 인덱스** | 3-gram(트라이그램) 기반 유사도 인덱스로 `ILIKE '%...%'` 자체를 가속 | ILIKE와 동일한 부분 문자열 매칭 의미론을 유지하면서 인덱스로 가속(실측상 대용량에서 100배 수준 개선 사례 존재) | 인덱스 크기·쓰기 비용 소폭 증가, PostgreSQL 확장(`CREATE EXTENSION pg_trgm`) 설치 필요 |
+| **`tsvector` + GIN (풀텍스트 검색)** | 형태소/어간 분석 후 토큰화하여 역색인 구축, `ts_rank`로 관련도 정렬 가능 | 대용량에서도 빠름(매칭 문서 수에만 비례), 관련도 순 정렬·다중 키워드 AND/OR 지원 | 한국어는 PostgreSQL 기본 사전(`simple`)이 어간 분석을 지원하지 않아 사실상 공백 기준 토큰 매칭 수준 — 한국어 형태소 분석이 필요하면 `pg_bigm` 등 별도 확장이나 형태소 분석기 연동이 추가로 필요해 구현 복잡도가 커짐 |
+
+### 이 프로젝트(MVP) 권장안: ILIKE 우선, 필요 시 `pg_trgm` GIN 인덱스 추가
+
+- **상품명이 한국어 위주**라는 점이 중요한 판단 기준입니다. `tsvector`의 핵심 이점(형태소 분석 기반 관련도 랭킹)은 한국어 사전 없이는 거의 살지 못하는 반면, 오탈자/부분 검색(“나이키” 검색 시 “나이키 신발”도 매칭)에는 `ILIKE` 방식이 한국어에서 오히려 자연스럽습니다.
+- **MVP 트래픽 규모(상품 수 수백~수천 건)에서는 인덱스 없는 `ILIKE`만으로도 충분히 빠릅니다.** 별도 인덱스 작업 없이 `Prisma`의 `contains` 옵션으로 바로 구현 가능:
+
+```ts
+const results = await prisma.product.findMany({
+  where: {
+    status: "active",
+    name: { contains: keyword, mode: "insensitive" },
+  },
+  select: { id: true, name: true }, // 목록은 최소 필드만(architecture.md 4장 원칙과 동일)
+});
+```
+
+- 이후 상품 수가 늘어 검색이 체감상 느려지면(대략 수만 건 이상), **스키마 변경 없이 인덱스만 추가**하는 것으로 대응 가능:
+
+```sql
+CREATE EXTENSION IF NOT EXISTS pg_trgm;
+CREATE INDEX products_name_trgm_idx ON products USING GIN (name gin_trgm_ops);
+```
+
+이 인덱스를 추가해도 애플리케이션 쿼리(`ILIKE`/Prisma `contains`)는 코드 변경 없이 그대로 가속됩니다 — planner가 자동으로 인덱스를 활용.
+
+- 향후 "관련도순 정렬", "복수 키워드 검색", "설명(description) 본문까지 검색 범위 확장" 같은 요구가 생기면 그때 `tsvector`(한국어 형태소 분석기 연동 포함) 도입을 재검토하는 것을 권장합니다. 지금 단계에서 미리 도입하는 것은 과설계로 판단됩니다.
+
+**참고**: [Optimizing Full-Text Search in PostgreSQL: B-Tree to GIN](https://medium.com/@sayeedrahman_67698/optimizing-text-search-in-postgresql-a-journey-from-b-tree-to-gin-indexes-d8e8a5813518), [Different ways to Search Text in PostgreSQL - Aiven](https://aiven.io/blog/different-ways-to-search-text-in-postgresql), [PostgreSQL Full-Text Search: Alternative to Elasticsearch for Small/Medium Apps](https://iniakunhuda.medium.com/postgresql-full-text-search-a-powerful-alternative-to-elasticsearch-for-small-to-medium-d9524e001fe0)
+
+---
+
 ## 종합 추천 패키지 목록
 
 | 영역 | 추천 패키지 |
@@ -345,10 +512,16 @@ app.post("/api/login", loginLimiter, loginHandler);
 | CSRF | `csrf-csrf` (세션 쿠키 인증 시) 또는 SameSite 쿠키 전략 (토큰 헤더 인증 시) |
 | 파일 업로드 | `multer` + `file-type` (매직 바이트 검증용) |
 | Rate limiting | `express-rate-limit`, (분산 환경) `rate-limit-redis` |
+| 송금/포인트 동시성 | Prisma `$queryRaw` + `FOR UPDATE` (또는 `isolationLevel: Serializable`), DB `CHECK (balance >= 0)` |
+| 상품 검색 | Prisma `contains({ mode: 'insensitive' })` (ILIKE), 필요 시 `pg_trgm` GIN 인덱스 |
 
 ---
 
 ## 다음 단계 제안 (민준 확인 필요)
 
-- 인증 방식(세션 쿠키 vs JWT 헤더)이 확정되어야 CSRF 대응 전략을 확정할 수 있음
-- DB 종류(PostgreSQL/MySQL vs SQLite)가 확정되어야 ORM 최종 선택 가능
+> `docs/architecture.md`에서 인증 방식(세션 쿠키)·DB(PostgreSQL)·ORM(Prisma)은 이미 확정되어 아래 항목은 해소됨. 8·9장 관련 신규 확인 필요 항목만 남김.
+
+- **송금/포인트**: `users` 테이블에 `balance` 컬럼을 추가할지, 별도 `wallets` 테이블로 분리할지 결정 필요 (현재 `docs/architecture.md` 3장 스키마에는 아직 없음)
+- **송금/포인트**: 초기 포인트 지급 정책(가입 시 지급 여부/금액), 송금 최소/최대 금액 제한 여부 확인 필요
+- **송금/포인트**: 신고 누적으로 `dormant` 전환된 유저의 송금 가능 여부(휴면 유저는 송신/수신 모두 차단해야 하는지) — §5의 즉시 무효화 설계와 함께 검토 필요
+- **상품 검색**: 검색 범위를 상품명(`name`)만으로 할지, 설명(`description`)까지 포함할지에 따라 8-2/9장의 인덱스 대상 컬럼이 달라짐

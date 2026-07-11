@@ -1,0 +1,116 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserStatus {
+  active
+  dormant
+}
+
+enum ProductStatus {
+  active
+  blocked
+}
+
+enum ReportTargetType {
+  user
+  product
+}
+
+enum ChatRoomType {
+  global
+  direct
+}
+
+model User {
+  id           String     @id @default(uuid())
+  username     String     @unique @db.VarChar(30)
+  passwordHash String     @map("password_hash") @db.VarChar(100)
+  bio          String?    @db.Text
+  status       UserStatus @default(active)
+  reportCount  Int        @default(0) @map("report_count")
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+
+  products         Product[]
+  reportsFiled     Report[]              @relation("ReportsFiled")
+  messages         Message[]
+  roomParticipants ChatRoomParticipant[]
+
+  @@map("users")
+}
+
+model Product {
+  id          String        @id @default(uuid())
+  name        String        @db.VarChar(100)
+  description String        @db.Text
+  price       Int
+  sellerId    String        @map("seller_id")
+  seller      User          @relation(fields: [sellerId], references: [id], onDelete: Cascade)
+  status      ProductStatus @default(active)
+  reportCount Int           @default(0) @map("report_count")
+  imagePath   String?       @map("image_path") @db.VarChar(255)
+  createdAt   DateTime      @default(now()) @map("created_at")
+  updatedAt   DateTime      @updatedAt @map("updated_at")
+
+  @@index([sellerId])
+  @@index([status, createdAt])
+  @@map("products")
+}
+
+model Report {
+  id         String           @id @default(uuid())
+  reporterId String           @map("reporter_id")
+  reporter   User             @relation("ReportsFiled", fields: [reporterId], references: [id], onDelete: Cascade)
+  targetType ReportTargetType @map("target_type")
+  targetId   String           @map("target_id")
+  reason     String           @db.Text
+  createdAt  DateTime         @default(now()) @map("created_at")
+
+  @@unique([reporterId, targetType, targetId])
+  @@map("reports")
+}
+
+model ChatRoom {
+  id         String       @id @default(uuid())
+  type       ChatRoomType
+  userIdLow  String?      @map("user_id_low")
+  userIdHigh String?      @map("user_id_high")
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  participants ChatRoomParticipant[]
+  messages     Message[]
+
+  @@unique([userIdLow, userIdHigh])
+  @@map("chat_rooms")
+}
+
+model ChatRoomParticipant {
+  id       String   @id @default(uuid())
+  roomId   String   @map("room_id")
+  room     ChatRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  userId   String   @map("user_id")
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  joinedAt DateTime @default(now()) @map("joined_at")
+
+  @@unique([roomId, userId])
+  @@map("chat_room_participants")
+}
+
+model Message {
+  id        String   @id @default(uuid())
+  roomId    String   @map("room_id")
+  room      ChatRoom @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  senderId  String   @map("sender_id")
+  sender    User     @relation(fields: [senderId], references: [id], onDelete: Cascade)
+  content   String   @db.Text
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([roomId, createdAt])
+  @@map("messages")
+}

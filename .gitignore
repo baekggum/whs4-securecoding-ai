@@ -1,0 +1,20 @@
+node_modules/
+dist/
+build/
+.env
+.env.*
+!.env.example
+*.log
+npm-debug.log*
+
+# uploads (runtime file storage, never commit user content)
+backend/uploads/*
+!backend/uploads/.gitkeep
+
+# editor/OS
+.DS_Store
+.vscode/
+.idea/
+
+# prisma
+backend/prisma/dev.db

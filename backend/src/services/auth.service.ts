@@ -3,6 +3,7 @@ import { hashPassword, verifyPassword } from "../lib/password";
 import { HttpError } from "../lib/HttpError";
 import type { SignupInput, LoginInput } from "../validators/auth.schema";
 import { SELF_USER_SELECT } from "../utils/constants";
+import { env } from "../env";
 
 export async function signup(input: SignupInput) {
   const existing = await prisma.user.findUnique({ where: { username: input.username } });
@@ -12,11 +13,18 @@ export async function signup(input: SignupInput) {
 
   const passwordHash = await hashPassword(input.password);
 
+  // User row + its wallet are created atomically so "a user with no
+  // wallet" is never a state the rest of the codebase has to null-check
+  // for (docs/architecture.md §7.4). role is never taken from input — it
+  // only ever gets its schema default ("user"); promoting to admin is a
+  // separate operator-run script (backend/scripts/promoteAdmin.ts), not a
+  // public API path (docs/architecture.md §9.1).
   const user = await prisma.user.create({
     data: {
       username: input.username,
       passwordHash,
       bio: input.bio ?? "",
+      wallet: { create: { balance: env.SIGNUP_BONUS_POINTS } },
     },
     select: SELF_USER_SELECT,
   });
@@ -42,5 +50,9 @@ export async function login(input: LoginInput) {
     throw new HttpError(403, "장기간 신고 누적으로 휴면 처리된 계정입니다.");
   }
 
-  return user;
+  // Re-fetch through the safe select rather than picking fields off the
+  // row we just used for password verification, so this stays in lockstep
+  // with signup's/`/me`'s response shape (including wallet balance)
+  // instead of two hand-maintained field lists drifting apart.
+  return prisma.user.findUniqueOrThrow({ where: { id: user.id }, select: SELF_USER_SELECT });
 }

@@ -79,6 +79,14 @@ export function UserProfilePage() {
               💬 채팅하기
             </button>
           )}
+          {user && profile.status !== "dormant" && (
+            <Link
+              className="btn"
+              to={`/transfer?receiverId=${profile.id}&receiverName=${encodeURIComponent(profile.username)}`}
+            >
+              💰 포인트 보내기
+            </Link>
+          )}
           <Link className="btn" to={`/report?targetType=user&targetId=${profile.id}&targetName=${encodeURIComponent(profile.username)}`}>
             이 사용자 신고하기
           </Link>

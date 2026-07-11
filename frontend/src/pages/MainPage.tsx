@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { ProductCard } from "../components/ProductCard";
@@ -13,16 +13,24 @@ export function MainPage() {
   const [cursor, setCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [globalRoomId, setGlobalRoomId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [appliedSearch, setAppliedSearch] = useState("");
 
   useEffect(() => {
+    setLoading(true);
     productApi
-      .listProducts()
+      .listProducts(undefined, undefined, appliedSearch || undefined)
       .then(({ items, nextCursor }) => {
         setProducts(items);
         setCursor(nextCursor);
       })
       .finally(() => setLoading(false));
-  }, []);
+  }, [appliedSearch]);
+
+  function handleSearchSubmit(e: FormEvent) {
+    e.preventDefault();
+    setAppliedSearch(search.trim());
+  }
 
   useEffect(() => {
     if (!user) {
@@ -40,7 +48,7 @@ export function MainPage() {
 
   async function loadMore() {
     if (!cursor) return;
-    const { items, nextCursor } = await productApi.listProducts(cursor);
+    const { items, nextCursor } = await productApi.listProducts(cursor, undefined, appliedSearch || undefined);
     setProducts((prev) => [...prev, ...items]);
     setCursor(nextCursor);
   }
@@ -49,10 +57,33 @@ export function MainPage() {
     <div className="main-layout">
       <section>
         <h2>전체 상품</h2>
+        <form onSubmit={handleSearchSubmit} style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="상품명, 설명 검색..."
+            style={{ flex: 1, padding: "8px 12px", border: "1px solid var(--color-border)", borderRadius: 8 }}
+          />
+          <button className="btn" type="submit">
+            검색
+          </button>
+          {appliedSearch && (
+            <button
+              type="button"
+              className="btn"
+              onClick={() => {
+                setSearch("");
+                setAppliedSearch("");
+              }}
+            >
+              초기화
+            </button>
+          )}
+        </form>
         {loading ? (
           <p>불러오는 중...</p>
         ) : products.length === 0 ? (
-          <div className="empty-state">등록된 상품이 없습니다.</div>
+          <div className="empty-state">{appliedSearch ? "검색 결과가 없습니다." : "등록된 상품이 없습니다."}</div>
         ) : (
           <>
             <div className="product-grid">

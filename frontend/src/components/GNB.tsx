@@ -24,6 +24,11 @@ export function GNB() {
             <Link className="btn" to="/mypage">
               마이페이지
             </Link>
+            {user.role === "admin" && (
+              <Link className="btn" to="/admin">
+                관리자
+              </Link>
+            )}
             <button className="btn" onClick={handleLogout}>
               로그아웃
             </button>

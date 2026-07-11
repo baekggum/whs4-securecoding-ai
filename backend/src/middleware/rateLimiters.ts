@@ -23,6 +23,18 @@ export const reportLimiter = rateLimit({
   message: { error: "신고가 너무 많습니다. 잠시 후 다시 시도해주세요." },
 });
 
+// Wallet transfers are a mini payment system — bounding request rate limits
+// how fast a compromised/malicious account can drain a wallet or hammer the
+// concurrency-sensitive transfer path (docs/architecture.md §7.5).
+export const transferLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => req.currentUser?.id ?? req.ip ?? "anonymous",
+  message: { error: "송금 요청이 너무 많습니다. 잠시 후 다시 시도해주세요." },
+});
+
 // Gentle default limiter applied to the whole API.
 export const globalLimiter = rateLimit({
   windowMs: 60 * 1000,

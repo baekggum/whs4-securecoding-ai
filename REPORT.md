@@ -1,7 +1,7 @@
 # 보안 구현 리포트
 
 작성자: 서연 (개발자)
-상태: 코드 리뷰(태양) 1차 반영 완료 + 종합 재검증(13번) 완료 + Windows 실사용 버그 2건 수정 및 리뷰 반영 완료(14번)
+상태: 코드 리뷰(태양) 1차 반영 완료 + 종합 재검증(13번) 완료 + Windows 실사용 버그 2건 수정 및 리뷰 반영 완료(14번) + v1.2 확장(송금/검색/관리자) 구현·검증·태양 리뷰(Cycle 1) "병합 가능" 판정 완료(15번)
 
 이 문서는 `docs/architecture.md`(민준), `docs/research.md`(지훈)에서 지정한 보안 요구사항을
 실제로 어떻게 구현했는지, 그리고 로컬 환경에서 어떻게 동작을 검증했는지 정리합니다.
@@ -372,3 +372,91 @@ API/WebSocket 레벨에서 아래 세 가지를 재검증했습니다. 백엔드
 로컬 Docker PostgreSQL 컨테이너(`postgres:16-alpine`) + `npx tsx src/server.ts`로 백엔드를 직접 기동하고,
 `curl`과 `socket.io-client` 스크립트로 회원가입/로그인/세션/CSRF/상품 CRUD/파일 업로드/신고 임계치/IDOR/Socket.IO 인증 및
 실시간 메시지 송수신까지 REST + WebSocket 양쪽 경로를 실제로 호출하며 확인했습니다(브라우저 UI 자동화 없이 API 레벨 검증).
+
+---
+
+## 15. v1.2 확장 — 송금(포인트), 상품 검색, 관리자 기능
+
+민준이 `docs/architecture.md`에 v1.2로 추가한 §7(송금)/§8(검색)/§9(관리자) 설계를 §10 순서(마이그레이션 →
+송금 → 검색 → 관리자)대로 구현했습니다. 이 섹션은 완료 후 한 번에 정리한 게 아니라, "구현 → 자체 검증 →
+태양 리뷰 → (지적사항 있으면) 수정 → 재검증 → 재검토" 사이클을 반복하며 그때그때 누적한 기록입니다.
+
+### 15.1 구현 요약
+
+- **DB**: `wallets`(1:1, `balance BIGINT CHECK(balance >= 0)`), `transfers`(불변 원장,
+  `CHECK(amount > 0)`, `CHECK(sender_id <> receiver_id)`, `UNIQUE(sender_id, idempotency_key)`) 신규 테이블.
+  `users.role`(`ENUM('user','admin')`, 기본값 `user`), `reports.resolved/resolved_at/resolved_by` 컬럼 추가.
+  Prisma는 CHECK 제약 DSL이 없어 마이그레이션 SQL에 수기로 추가(`backend/prisma/migrations/.../migration.sql`).
+  기존 유저에도 지갑을 백필하는 `INSERT ... ON CONFLICT DO NOTHING`을 같은 마이그레이션에 포함.
+- **송금**: `backend/src/services/wallet.service.ts`. 조건부 `updateMany(WHERE balance >= amount)`로
+  잔액 부족을 트랜잭션 내부에서 원자적으로 검증(§7.2), sender/receiver 지갑 행을 **항상 id 정렬 순서로** 갱신해
+  데드락을 구조적으로 방지(`chat_rooms`의 `user_id_low/high` 패턴 재사용), Postgres 데드락(Prisma `P2034`)
+  감지 시 1회 재시도. 멱등키는 `(senderId, idempotencyKey)` 사전 조회 + `UNIQUE` 제약 위반(P2002) 시
+  재조회-후-반환으로 이중 방어(`startDirectRoom`과 동일 패턴). 회원가입 트랜잭션에 지갑 생성(`SIGNUP_BONUS_POINTS`,
+  기본 10000P)을 포함해 "지갑 없는 유저" 상태 자체가 존재하지 않도록 함.
+- **검색**: 기존 `GET /api/products`에 `search` 쿼리 파라미터만 추가(`product.service.ts`), `name`/`description`에
+  대한 Prisma `contains`(`mode: 'insensitive'`) — 파라미터 바인딩되므로 SQLi 위험 없음(§6과 동일 원칙). 목록
+  최소노출 원칙(id+name만)은 검색 결과에도 그대로 적용.
+- **관리자**: `requireAdmin`(`backend/src/middleware/admin.ts`)은 `requireAuth`가 이미 채워둔 `req.currentUser`의
+  `role`만 검사 — 추가 쿼리 없음. 관리자 승격은 공개 API 어디에도 없고 `backend/scripts/promoteAdmin.ts`(운영자가
+  서버에서 직접 실행하는 CLI)로만 가능. 회원가입 요청 바디에 `role`을 넣어도 Zod 스키마에 그 필드 자체가 없어
+  무시됨(실제로 `role: "admin"`을 넣어 회원가입해도 결과가 `user`임을 확인 — 15.2 참고). 관리자의 상품 강제
+  삭제는 일반 삭제(`product.service.ts`)와 별개 함수(`admin.service.ts`)로 구현해 소유권 검증 코드를 공유하지
+  않음(설계 의도 그대로).
+- **BigInt 직렬화**: `wallets.balance`/`transfers.amount` 등은 Prisma에서 JS `bigint`로 매핑되는데 `bigint`는
+  `JSON.stringify`가 던지므로, 모든 응답 DTO에서 문자열로 변환(`serializeSelfUser`, `wallet.service.ts`의
+  `serializeTransfer`) — 정밀도 손실 없는 표준적인 처리 방식.
+
+### 15.2 검증 사이클
+
+#### Cycle 1 (자체 검증, 태양 리뷰 요청 전)
+
+**일반 동작 확인** (`node` + `fetch` 스크립트, 서버 실기동 상태):
+- 회원가입 시 `SIGNUP_BONUS_POINTS`(10000) 자동 지급 확인, `role`을 요청 바디에 넣어도 무시되고 `user`로
+  생성됨을 확인.
+- 정상 송금(A→B 3000) → 양쪽 잔액 정확히 반영, 응답에 `senderBalanceAfter`/`receiverBalanceAfter` 스냅샷 포함.
+- 동일 `idempotencyKey`로 재요청 시 새 송금이 발생하지 않고 최초 결과가 그대로 반환됨(잔액 재확인으로 이중
+  차감 없음 확인).
+- `MAX_TRANSFER_AMOUNT` 초과 금액은 Zod 검증 단계에서 400.
+- 상품 검색: 상품명 매칭/설명 매칭/무매칭/검색어 없을 때(기존 동작 유지) 4가지 케이스 모두 정상.
+- DB 레벨 CHECK 제약 직접 확인: `UPDATE wallets SET balance = -100 ...`을 애플리케이션 우회해서 직접 실행 →
+  `wallets_balance_non_negative` 제약 위반으로 즉시 거부됨을 확인(애플리케이션 로직에 버그가 있어도 DB가
+  최종 방어선이라는 설계 의도가 실제로 동작함을 증명).
+- 관리자 전체 기능(유저 강제휴면/휴면해제+reportCount 리셋, 상품 전체목록(전체필드)/강제삭제/차단해제, 신고
+  목록(target 조인)/처리완료 표시, 전체 송금내역 필터 조회) 14개 체크 전부 통과.
+
+**필수 지정 엣지케이스 재현** (`test_edge_cases.js`, 20개 체크 전부 통과):
+
+| # | 시나리오 | 재현 방법 | 결과 |
+|---|---|---|---|
+| 1 | 동시 송금 레이스(잔액 10000에 6000+6000 동시 요청) | `Promise.all`로 병렬 fetch 2건 | 정확히 하나만 200, 하나는 409. 최종 잔액 4000(송신)/16000(수신) — 이중차감·잔액꼬임 없음 |
+| 2 | 잔액 초과 송금(단건 + 동시 3건) | 999999P 송금 시도 | 전부 409, 잔액 불변, 음수 발생 없음 |
+| 3 | 자기 자신 송금 | `receiverId === senderId`로 요청 | 400, 잔액 불변 |
+| 4 | 관리자 라우트 권한 우회 | 일반 유저 세션으로 `/api/admin/*` 9개 엔드포인트(유저 2, 상품 3, 신고 2, 송금내역 1 + 목록) 전부 직접 호출 | 전부 403. 대조군으로 실제 관리자 세션으로는 200임을 함께 확인(테스트 자체의 오탐 아님을 검증) |
+
+이전 라운드(§13 이전 커밋)에서 이미 확인한 동시 반대방향 송금(A→B, B→A 16건 동시) 데드락 없음 테스트도
+함께 재확인(회귀 없음).
+
+**정적 검증**: `backend`/`frontend` 양쪽 `tsc --noEmit` 및 프로덕션 빌드 모두 통과.
+
+#### 태양 리뷰 (Cycle 1) — 결과: 병합 가능
+
+태양이 서연의 보고를 그대로 신뢰하지 않고, 로컬에 서버를 직접 띄워 **독립적으로 동일 위협을 재현**하는
+방식으로 검토했습니다(전체 기록은 `docs/review.md` "v1.2 확장 리뷰(송금/검색/관리자) — Cycle 1" 참고).
+중점 요청 4가지(동시성 안전/BigInt 직렬화/관리자 권한 즉시반영/삭제로직 분리) 전부 코드 리딩 + 독립
+재현으로 확인했고, 추가로:
+
+- 관리자 세션으로 로그인한 뒤 **같은 세션 쿠키를 그대로 둔 채** DB에서 `role`을 직접 `admin → user`로
+  강등시키고, 재로그인 없이 그 쿠키로 `/api/admin/users` 호출 시 즉시 403이 되는 것을 확인 — "다음 요청부터
+  즉시 반영"이 실제로 그렇다는 것을 승격이 아닌 **강등** 방향으로도 검증(서연의 자체 검증에는 없던 각도).
+- `wallets_balance_non_negative` CHECK 제약을 `$executeRawUnsafe`로 애플리케이션을 완전히 우회해 직접
+  깨보려는 시도 → Postgres `23514`(check_violation)로 거부, 잔액 불변까지 실제 에러로 확인.
+- `PUBLIC_USER_SELECT`/관리자 조회 함수들 모두 `wallet` 필드 자체를 select하지 않아, 직렬화 누락 여부와
+  무관하게 애초에 타인 잔액이 응답에 노출될 수 없는 구조라는 점도 확인.
+
+**비블로커 제안**: 검증 스크립트(`test_edge_cases.js`)가 저장소에 없어 태양이 매번 새로 스크립트를 짜야
+했던 점을 지적받음 → `backend/scripts/verifyWalletAdminEdgeCases.js`로 정리해 커밋(`npm run
+verify:wallet-admin --workspace backend`, 관리자 대조군 확인은 `VERIFY_ADMIN_USERNAME`/`VERIFY_ADMIN_PASSWORD`
+설정 시에만 실행되고 미설정 시 안전하게 스킵됨). 커밋 직후 재실행해 20개 체크 전부 통과를 재확인.
+
+**최종 결론(태양)**: "현재 diff는 병합 가능한 상태로 판단합니다." — 추가 지적사항 없음, 별도 Cycle 2 불필요.

@@ -1,5 +1,6 @@
 export type UserStatus = "active" | "dormant";
 export type ProductStatus = "active" | "blocked";
+export type UserRole = "user" | "admin";
 
 export interface PublicUser {
   id: string;
@@ -11,6 +12,41 @@ export interface PublicUser {
 
 export interface SelfUser extends PublicUser {
   updatedAt: string;
+  role: UserRole;
+  balance: string;
+}
+
+export interface Transfer {
+  id: string;
+  senderId: string;
+  receiverId: string;
+  amount: string;
+  senderBalanceAfter: string;
+  receiverBalanceAfter: string;
+  createdAt: string;
+}
+
+export interface AdminUserSummary {
+  id: string;
+  username: string;
+  status: UserStatus;
+  role: UserRole;
+  reportCount: number;
+  createdAt: string;
+}
+
+export interface AdminReport {
+  id: string;
+  reporterId: string;
+  targetType: ReportTargetType;
+  targetId: string;
+  reason: string;
+  resolved: boolean;
+  resolvedAt: string | null;
+  resolvedById: string | null;
+  createdAt: string;
+  reporter?: { id: string; username: string };
+  target: { type: "user" | "product"; id: string; label: string } | null;
 }
 
 export interface ProductListItem {

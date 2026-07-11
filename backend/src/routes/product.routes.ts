@@ -39,8 +39,8 @@ productRouter.post(
 productRouter.get(
   "/",
   asyncHandler(async (req, res) => {
-    const { cursor, limit, sellerId } = productListQuerySchema.parse(req.query);
-    const result = await productService.listProducts(cursor, limit, sellerId);
+    const { cursor, limit, sellerId, search } = productListQuerySchema.parse(req.query);
+    const result = await productService.listProducts(cursor, limit, sellerId, search);
     res.json(result);
   })
 );

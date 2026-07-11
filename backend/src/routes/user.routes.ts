@@ -3,6 +3,7 @@ import { asyncHandler } from "../lib/asyncHandler";
 import { requireAuth } from "../middleware/auth";
 import { updateBioSchema, updatePasswordSchema, userIdParamSchema } from "../validators/user.schema";
 import * as userService from "../services/user.service";
+import { serializeSelfUser } from "../utils/constants";
 
 export const userRouter = Router();
 
@@ -10,17 +11,8 @@ userRouter.get(
   "/me",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const user = req.currentUser!;
-    res.json({
-      user: {
-        id: user.id,
-        username: user.username,
-        bio: user.bio,
-        status: user.status,
-        createdAt: user.createdAt,
-        updatedAt: user.updatedAt,
-      },
-    });
+    const user = await userService.getSelf(req.currentUser!.id);
+    res.json({ user: serializeSelfUser(user) });
   })
 );
 
@@ -30,7 +22,7 @@ userRouter.patch(
   asyncHandler(async (req, res) => {
     const input = updateBioSchema.parse(req.body);
     const user = await userService.updateBio(req.currentUser!.id, input.bio);
-    res.json({ user });
+    res.json({ user: serializeSelfUser(user) });
   })
 );
 

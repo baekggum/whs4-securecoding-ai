@@ -20,6 +20,18 @@ export const SELF_USER_SELECT = {
   username: true,
   bio: true,
   status: true,
+  role: true,
   createdAt: true,
   updatedAt: true,
+  wallet: { select: { balance: true } },
 } as const;
+
+// bigint isn't JSON-serializable, so every self-facing user DTO goes
+// through this to flatten wallet.balance into a plain string field
+// (docs/architecture.md §7.6 — GET /api/users/me now also exposes balance).
+export function serializeSelfUser<T extends { wallet: { balance: bigint } | null }>(
+  user: T
+): Omit<T, "wallet"> & { balance: string } {
+  const { wallet, ...rest } = user;
+  return { ...rest, balance: (wallet?.balance ?? 0n).toString() };
+}

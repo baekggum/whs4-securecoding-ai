@@ -23,10 +23,24 @@ export async function createProduct(sellerId: string, input: CreateProductInput)
 
 // Minimal-exposure list: only active products, only id+name
 // (docs/architecture.md §4 "목록 최소 노출 원칙"). Optional sellerId powers
-// the "판매중인 상품" grid on a user's public profile page.
-export async function listProducts(cursor: string | undefined, limit: number, sellerId?: string) {
+// the "판매중인 상품" grid on a user's public profile page. Optional search
+// is a plain `contains`/`ILIKE` match on name+description (docs/architecture.md
+// §8) — Prisma parameterizes it same as any other query, so this carries no
+// extra SQLi surface versus the rest of the app (§6).
+export async function listProducts(cursor: string | undefined, limit: number, sellerId?: string, search?: string) {
   const products = await prisma.product.findMany({
-    where: { status: "active", ...(sellerId ? { sellerId } : {}) },
+    where: {
+      status: "active",
+      ...(sellerId ? { sellerId } : {}),
+      ...(search
+        ? {
+            OR: [
+              { name: { contains: search, mode: "insensitive" } },
+              { description: { contains: search, mode: "insensitive" } },
+            ],
+          }
+        : {}),
+    },
     select: { id: true, name: true },
     orderBy: { createdAt: "desc" },
     take: limit + 1,

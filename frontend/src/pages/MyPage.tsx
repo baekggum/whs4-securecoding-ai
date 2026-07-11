@@ -1,11 +1,64 @@
 import { useEffect, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { Badge } from "../components/Badge";
 import { Toast } from "../components/Toast";
 import * as userApi from "../api/users";
 import * as productApi from "../api/products";
+import * as walletApi from "../api/wallet";
 import { ApiError } from "../api/client";
-import type { Product } from "../types";
+import type { Product, Transfer } from "../types";
+
+function WalletTab() {
+  const { user } = useAuth();
+  const [transactions, setTransactions] = useState<Transfer[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    walletApi
+      .listTransactions()
+      .then(({ transactions: list }) => setTransactions(list))
+      .finally(() => setLoading(false));
+  }, []);
+
+  if (!user) return null;
+
+  return (
+    <div>
+      <div className="card" style={{ textAlign: "center", marginBottom: 16 }}>
+        <div style={{ color: "var(--color-muted)", fontSize: "0.85rem" }}>내 잔액</div>
+        <div style={{ fontSize: "1.8rem", fontWeight: 700 }}>{Number(user.balance).toLocaleString()}P</div>
+        <Link className="btn btn-primary" to="/transfer" style={{ marginTop: 8, display: "inline-block" }}>
+          포인트 보내기
+        </Link>
+      </div>
+      <h3>송금/수신 내역</h3>
+      {loading ? (
+        <p>불러오는 중...</p>
+      ) : transactions.length === 0 ? (
+        <div className="empty-state">아직 내역이 없습니다.</div>
+      ) : (
+        transactions.map((t) => {
+          const isSent = t.senderId === user.id;
+          return (
+            <div key={t.id} className="my-product-row">
+              <div>
+                <strong>{isSent ? "보냄" : "받음"}</strong>
+                <div style={{ color: "var(--color-muted)", fontSize: "0.8rem" }}>
+                  {new Date(t.createdAt).toLocaleString()}
+                </div>
+              </div>
+              <div style={{ fontWeight: 700, color: isSent ? "var(--color-danger)" : "var(--color-primary)" }}>
+                {isSent ? "-" : "+"}
+                {Number(t.amount).toLocaleString()}P
+              </div>
+            </div>
+          );
+        })
+      )}
+    </div>
+  );
+}
 
 function statusBadge(product: Product) {
   if (product.status === "blocked") return <Badge variant="muted">신고로 노출 제한됨</Badge>;
@@ -80,7 +133,7 @@ function ProductRow({ product, onChanged }: { product: Product; onChanged: () =>
 
 export function MyPage() {
   const { user, refreshUser } = useAuth();
-  const [tab, setTab] = useState<"info" | "products">("info");
+  const [tab, setTab] = useState<"info" | "products" | "wallet">("info");
   const [bio, setBio] = useState(user?.bio ?? "");
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
@@ -138,9 +191,14 @@ export function MyPage() {
         <button className={tab === "products" ? "active" : ""} onClick={() => setTab("products")}>
           내가 등록한 상품
         </button>
+        <button className={tab === "wallet" ? "active" : ""} onClick={() => setTab("wallet")}>
+          지갑
+        </button>
       </div>
 
-      {tab === "info" ? (
+      {tab === "wallet" ? (
+        <WalletTab />
+      ) : tab === "info" ? (
         <form onSubmit={handleSaveInfo}>
           {infoError && <div className="form-error-banner">{infoError}</div>}
           <div className="form-field">

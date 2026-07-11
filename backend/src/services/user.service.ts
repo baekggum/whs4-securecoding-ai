@@ -3,6 +3,10 @@ import { hashPassword, verifyPassword } from "../lib/password";
 import { HttpError } from "../lib/HttpError";
 import { PUBLIC_USER_SELECT, SELF_USER_SELECT } from "../utils/constants";
 
+export async function getSelf(userId: string) {
+  return prisma.user.findUniqueOrThrow({ where: { id: userId }, select: SELF_USER_SELECT });
+}
+
 export async function getPublicProfile(userId: string) {
   const user = await prisma.user.findUnique({
     where: { id: userId },

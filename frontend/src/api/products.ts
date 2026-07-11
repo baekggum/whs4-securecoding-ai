@@ -1,10 +1,11 @@
 import { api } from "./client";
 import type { Product, ProductListItem } from "../types";
 
-export function listProducts(cursor?: string, sellerId?: string) {
+export function listProducts(cursor?: string, sellerId?: string, search?: string) {
   const params = new URLSearchParams();
   if (cursor) params.set("cursor", cursor);
   if (sellerId) params.set("sellerId", sellerId);
+  if (search) params.set("search", search);
   const query = params.toString() ? `?${params.toString()}` : "";
   return api.get<{ items: ProductListItem[]; nextCursor: string | null }>(`/api/products${query}`);
 }

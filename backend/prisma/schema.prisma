@@ -27,22 +27,73 @@ enum ChatRoomType {
   direct
 }
 
+enum UserRole {
+  user
+  admin
+}
+
 model User {
   id           String     @id @default(uuid())
   username     String     @unique @db.VarChar(30)
   passwordHash String     @map("password_hash") @db.VarChar(100)
   bio          String?    @db.Text
   status       UserStatus @default(active)
+  // Never settable via the signup API — admin accounts are only created by
+  // a separate operator-run script (backend/scripts/promoteAdmin.ts), never
+  // through a public endpoint (docs/architecture.md §9.1).
+  role         UserRole   @default(user)
   reportCount  Int        @default(0) @map("report_count")
   createdAt    DateTime   @default(now()) @map("created_at")
   updatedAt    DateTime   @updatedAt @map("updated_at")
 
-  products         Product[]
-  reportsFiled     Report[]              @relation("ReportsFiled")
-  messages         Message[]
-  roomParticipants ChatRoomParticipant[]
+  products          Product[]
+  reportsFiled      Report[]              @relation("ReportsFiled")
+  reportsResolved   Report[]              @relation("ReportsResolved")
+  messages          Message[]
+  roomParticipants  ChatRoomParticipant[]
+  wallet            Wallet?
+  transfersSent     Transfer[]            @relation("TransfersSent")
+  transfersReceived Transfer[]            @relation("TransfersReceived")
 
   @@map("users")
+}
+
+// 1:1 with User but deliberately a separate table rather than a column on
+// users — a wallet row is touched (row-locked) by every transfer, while
+// users rows are touched by unrelated updates (bio, password, dormant
+// transitions); splitting them keeps transfer locking scoped to just the
+// rows money actually moves through (docs/architecture.md §7.1).
+model Wallet {
+  id        String   @id @default(uuid())
+  userId    String   @unique @map("user_id")
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  balance   BigInt   @default(0)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  @@map("wallets")
+}
+
+// Immutable ledger — INSERT only, no service function ever updates or
+// deletes a row here (docs/architecture.md §7.1). balance/amount CHECK
+// constraints and the sender<>receiver CHECK are added via raw SQL in the
+// migration since Prisma's schema DSL has no CHECK constraint syntax.
+model Transfer {
+  id                   String   @id @default(uuid())
+  senderId             String   @map("sender_id")
+  sender               User     @relation("TransfersSent", fields: [senderId], references: [id], onDelete: Cascade)
+  receiverId           String   @map("receiver_id")
+  receiver             User     @relation("TransfersReceived", fields: [receiverId], references: [id], onDelete: Cascade)
+  amount               BigInt
+  idempotencyKey       String   @map("idempotency_key") @db.VarChar(100)
+  senderBalanceAfter   BigInt   @map("sender_balance_after")
+  receiverBalanceAfter BigInt   @map("receiver_balance_after")
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@unique([senderId, idempotencyKey])
+  @@index([senderId, createdAt])
+  @@index([receiverId, createdAt])
+  @@map("transfers")
 }
 
 model Product {
@@ -71,6 +122,14 @@ model Report {
   targetId   String           @map("target_id")
   reason     String           @db.Text
   createdAt  DateTime         @default(now()) @map("created_at")
+
+  // Operational status for admin triage — separate from, and does not
+  // affect, the automatic report-count/auto-block-or-dormant logic in
+  // §3/§6, which fires purely on report count regardless of this flag.
+  resolved     Boolean   @default(false)
+  resolvedAt   DateTime? @map("resolved_at")
+  resolvedById String?   @map("resolved_by")
+  resolvedBy   User?     @relation("ReportsResolved", fields: [resolvedById], references: [id], onDelete: SetNull)
 
   @@unique([reporterId, targetType, targetId])
   @@map("reports")

@@ -6,6 +6,7 @@ import { requireAuth } from "../middleware/auth";
 import { authLimiter } from "../middleware/rateLimiters";
 import { env } from "../env";
 import { CSRF_COOKIE_NAME } from "../middleware/csrf";
+import { serializeSelfUser } from "../utils/constants";
 
 export const authRouter = Router();
 
@@ -27,7 +28,7 @@ authRouter.post(
     await regenerateSession(req);
     req.session.userId = user.id;
 
-    res.status(201).json({ user });
+    res.status(201).json({ user: serializeSelfUser(user) });
   })
 );
 
@@ -41,9 +42,7 @@ authRouter.post(
     await regenerateSession(req);
     req.session.userId = user.id;
 
-    res.json({
-      user: { id: user.id, username: user.username, bio: user.bio, status: user.status, createdAt: user.createdAt },
-    });
+    res.json({ user: serializeSelfUser(user) });
   })
 );
 

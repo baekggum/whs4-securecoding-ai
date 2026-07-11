@@ -1,6 +1,7 @@
 import { Route, Routes } from "react-router-dom";
 import { GNB } from "./components/GNB";
 import { ProtectedRoute } from "./components/ProtectedRoute";
+import { AdminRoute } from "./components/AdminRoute";
 import { SignupPage } from "./pages/SignupPage";
 import { LoginPage } from "./pages/LoginPage";
 import { MainPage } from "./pages/MainPage";
@@ -10,6 +11,8 @@ import { MyPage } from "./pages/MyPage";
 import { UserProfilePage } from "./pages/UserProfilePage";
 import { ReportPage } from "./pages/ReportPage";
 import { ChatRoomPage } from "./pages/ChatRoomPage";
+import { TransferPage } from "./pages/TransferPage";
+import { AdminPage } from "./pages/AdminPage";
 
 export default function App() {
   return (
@@ -52,6 +55,22 @@ export default function App() {
               <ProtectedRoute>
                 <ChatRoomPage />
               </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/transfer"
+            element={
+              <ProtectedRoute>
+                <TransferPage />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="/admin"
+            element={
+              <AdminRoute>
+                <AdminPage />
+              </AdminRoute>
             }
           />
         </Routes>

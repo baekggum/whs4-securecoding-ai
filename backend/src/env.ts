@@ -17,6 +17,10 @@ const envSchema = z.object({
   PRODUCT_REPORT_THRESHOLD: z.coerce.number().int().positive().default(5),
   USER_REPORT_THRESHOLD: z.coerce.number().int().positive().default(5),
   BCRYPT_SALT_ROUNDS: z.coerce.number().int().min(10).max(15).default(12),
+  // Points economy (docs/architecture.md §7), not real money — bounded well
+  // within JS's safe integer range despite the DB columns being BIGINT.
+  SIGNUP_BONUS_POINTS: z.coerce.number().int().nonnegative().default(10000),
+  MAX_TRANSFER_AMOUNT: z.coerce.number().int().positive().default(1_000_000),
 });
 
 const parsed = envSchema.safeParse(process.env);

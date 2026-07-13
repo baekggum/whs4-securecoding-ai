@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { useFormSubmit } from "../hooks/useFormSubmit";
 import * as walletApi from "../api/wallet";
-import { ApiError } from "../api/client";
 
 export function TransferPage() {
   const [searchParams] = useSearchParams();
@@ -12,18 +12,15 @@ export function TransferPage() {
   const [receiverId, setReceiverId] = useState(searchParams.get("receiverId") ?? "");
   const receiverName = searchParams.get("receiverName") ?? "";
   const [amount, setAmount] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
+  const { submitting, error, submit } = useFormSubmit("송금에 실패했습니다.");
 
   const canSubmit = receiverId.trim().length > 0 && Number(amount) > 0 && !submitting;
 
-  async function handleSubmit(e: FormEvent) {
+  function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!canSubmit || !user) return;
-    setSubmitting(true);
-    setError(null);
-    try {
+    void submit(async () => {
       // Generated once per submit attempt — a retry of the exact same
       // click (e.g. a network blip) should NOT get a new key, but this
       // simple form doesn't retry automatically, so a fresh key per
@@ -34,11 +31,7 @@ export function TransferPage() {
       await walletApi.transfer(receiverId.trim(), Number(amount), idempotencyKey);
       await refreshUser();
       setDone(true);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "송금에 실패했습니다.");
-    } finally {
-      setSubmitting(false);
-    }
+    });
   }
 
   if (done) {

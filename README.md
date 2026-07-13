@@ -98,6 +98,67 @@ npm run build:frontend
 pm2, Docker `restart: unless-stopped`, systemd `Restart=on-failure` 등 **자동 재기동 supervisor**를 앞단에
 두어야 합니다. `node dist/server.js`를 감독 없이 직접 실행하면 이런 종료 후 서비스가 복구되지 않습니다.
 
+## 배포 (Docker Compose)
+
+배포 환경 시뮬레이션용 컨테이너 구성이 저장소에 포함되어 있습니다
+(`docker-compose.yml`, `backend/Dockerfile`, `frontend/Dockerfile`, `frontend/nginx.conf`).
+개발할 때는 이 구성이 아니라 위의 개발 서버(`npm run dev:*`)를 쓰세요.
+
+### 구성 요약
+
+- **frontend** — Vite 프로덕션 빌드를 nginx로 정적 서빙. `/api`, `/uploads`, `/socket.io`(WebSocket
+  Upgrade 포함)를 backend로 프록시하고, 그 외 경로는 SPA fallback(`index.html`)으로 처리.
+  개발 시 Vite 프록시와 동일하게 **브라우저 입장에서는 단일 오리진**이므로 SameSite=Lax 세션 쿠키가
+  그대로 동작합니다. 호스트에 노출되는 유일한 진입점(기본 `:8080`).
+- **backend** — multi-stage 빌드(의존성 → prisma generate + tsc → 프로덕션 의존성만 담은 런타임).
+  컨테이너 시작 시 `prisma migrate deploy`로 마이그레이션을 적용한 뒤 서버를 기동합니다
+  (`backend/docker-entrypoint.sh`). sharp/bcrypt 네이티브 바이너리는 빌드·런타임 스테이지가 같은
+  베이스 이미지를 쓰므로 항상 플랫폼이 일치합니다. 호스트 포트 미노출.
+- **postgres** — `postgres:16-alpine`, named volume으로 데이터 영속화, healthcheck 통과 후에만
+  backend가 기동. 세션 테이블은 `connect-pg-simple`이 첫 기동 시 자동 생성하므로 별도 준비 불필요.
+- **uploads** — 상품 이미지는 named volume(`uploads-data`)에 저장되어 컨테이너를 재생성해도 유지.
+- backend는 `uncaughtException` 시 의도적으로 종료하도록 설계되어 있어(아래 "프로세스 매니저 필수"),
+  compose의 `restart: unless-stopped`가 supervisor 역할을 합니다.
+
+### 실행
+
+```bash
+cp .env.example .env
+# .env에서 반드시 교체: POSTGRES_PASSWORD, SESSION_SECRET, CSRF_SECRET
+docker compose up -d --build
+# → http://localhost:8080  (포트는 .env의 HTTP_PORT로 변경)
+```
+
+상태/로그 확인 및 정리:
+
+```bash
+docker compose ps                  # 세 서비스 모두 healthy인지
+docker compose logs -f backend     # migrate deploy → "Server listening on port 4000"
+docker compose down                # 중지 (볼륨 유지)
+docker compose down -v             # 중지 + DB/업로드 데이터까지 삭제
+```
+
+### 주의 사항
+
+- **빌드 컨텍스트는 저장소 루트여야 합니다.** npm workspaces라 `package-lock.json`이 루트에만 있어,
+  두 Dockerfile 모두 루트 컨텍스트를 전제로 작성되어 있습니다 (compose가 이미 그렇게 설정됨).
+  수동 빌드 시: `docker build -f backend/Dockerfile .`
+- **HTTPS로 공개 배포할 때**: 이 compose 앞단에 TLS 종료 프록시(Caddy, Traefik, 클라우드 LB 등)를
+  두고, `.env`에서 `COOKIE_SECURE=true`와 `PUBLIC_ORIGIN=https://실제도메인`을 설정하세요.
+  평문 HTTP에서 `COOKIE_SECURE=true`를 켜면 브라우저가 Secure 쿠키를 조용히 버려 로그인이 전부
+  실패합니다(위 3번 항목 및 `backend/src/env.ts` 주석 참고).
+- **관리자 계정 승격**은 설계상 공개 API가 없습니다(§9.1). 컨테이너 환경에서는
+  `backend/scripts/promoteAdmin.ts`의 실행 도구(tsx)가 런타임 이미지에 없으므로, DB 컨테이너에서
+  직접 처리하는 것이 가장 간단합니다:
+  ```bash
+  docker compose exec postgres psql -U postgres -d tiny_secondhand \
+    -c "UPDATE users SET role='admin' WHERE username='<username>';"
+  ```
+- 다른 아키텍처(예: Apple Silicon)에서 빌드가 실패하면 lockfile의 플랫폼별 optional dependency
+  이슈일 수 있습니다 — `docs/deploy-handoff.md`의 알려진 제약 항목 참고.
+- 배포 검증 절차(무엇을 어떤 명령으로 확인하는지)는 [`docs/deploy-handoff.md`](./docs/deploy-handoff.md)에
+  정리되어 있습니다. 배포 토폴로지 다이어그램은 [`docs/architecture.md`](./docs/architecture.md) §11 참고.
+
 ## 알려진 제약 / 트레이드오프
 
 - 이 저장소를 개발한 샌드박스 환경은 Node 18로 고정되어 있어, 일부 최신 패키지(`file-type`, `create-vite` 등)의

@@ -1,6 +1,7 @@
 export type UserStatus = "active" | "dormant";
 export type ProductStatus = "active" | "blocked";
 export type UserRole = "user" | "admin";
+export type ReportTargetType = "user" | "product";
 
 export interface PublicUser {
   id: string;
@@ -46,7 +47,7 @@ export interface AdminReport {
   resolvedById: string | null;
   createdAt: string;
   reporter?: { id: string; username: string };
-  target: { type: "user" | "product"; id: string; label: string } | null;
+  target: { type: ReportTargetType; id: string; label: string } | null;
 }
 
 export interface ProductListItem {
@@ -84,5 +85,3 @@ export interface ChatMessage {
   senderUsername?: string;
   senderStatus?: UserStatus;
 }
-
-export type ReportTargetType = "user" | "product";

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { asyncHandler } from "../lib/asyncHandler";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, requireCurrentUser } from "../middleware/auth";
 import { requireAdmin } from "../middleware/admin";
 import {
   adminIdParamSchema,
@@ -75,8 +75,7 @@ adminRouter.get(
   "/reports",
   asyncHandler(async (req, res) => {
     const { cursor, limit, resolved } = adminReportListQuerySchema.parse(req.query);
-    const parsedResolved = resolved === undefined ? undefined : resolved === "true";
-    res.json(await adminService.listReports(cursor, limit, parsedResolved));
+    res.json(await adminService.listReports(cursor, limit, resolved));
   })
 );
 
@@ -84,7 +83,7 @@ adminRouter.patch(
   "/reports/:id/resolve",
   asyncHandler(async (req, res) => {
     const { id } = adminIdParamSchema.parse(req.params);
-    const report = await adminService.resolveReport(id, req.currentUser!.id);
+    const report = await adminService.resolveReport(id, requireCurrentUser(req).id);
     res.json({ report });
   })
 );

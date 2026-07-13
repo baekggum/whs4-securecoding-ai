@@ -1,7 +1,7 @@
 # 보안 구현 리포트
 
 작성자: 서연 (개발자)
-상태: 코드 리뷰(태양) 1차 반영 완료 + 종합 재검증(13번) 완료 + Windows 실사용 버그 2건 수정 및 리뷰 반영 완료(14번) + v1.2 확장(송금/검색/관리자) 구현·검증·태양 리뷰(Cycle 1) "병합 가능" 판정 완료(15번)
+상태: 코드 리뷰(태양) 1차 반영 완료 + 종합 재검증(13번) 완료 + Windows 실사용 버그 2건 수정 및 리뷰 반영 완료(14번) + v1.2 확장(송금/검색/관리자) 구현·검증·태양 리뷰(Cycle 1) "병합 가능" 판정 완료(15번) + Sprint 3 사전 전 기능 E2E 회귀 검증(refactor/agile-v2) 44/44 통과(16번)
 
 이 문서는 `docs/architecture.md`(민준), `docs/research.md`(지훈)에서 지정한 보안 요구사항을
 실제로 어떻게 구현했는지, 그리고 로컬 환경에서 어떻게 동작을 검증했는지 정리합니다.
@@ -460,3 +460,34 @@ verify:wallet-admin --workspace backend`, 관리자 대조군 확인은 `VERIFY_
 설정 시에만 실행되고 미설정 시 안전하게 스킵됨). 커밋 직후 재실행해 20개 체크 전부 통과를 재확인.
 
 **최종 결론(태양)**: "현재 diff는 병합 가능한 상태로 판단합니다." — 추가 지적사항 없음, 별도 Cycle 2 불필요.
+
+---
+
+## 16. Sprint 3 사전 전 기능 E2E 회귀 검증 (2026-07-13, `refactor/agile-v2`)
+
+대규모 리팩토링(라우트/서비스 분리, 공용 `lib/pagination.ts` 커서 헬퍼 도입 등) 직후라 Sprint 3 착수 전에
+전 기능 회귀 여부를 실서버(E2E) 기준으로 재확인했습니다. 지갑/관리자 엣지케이스는 같은 날
+`verifyWalletAdminEdgeCases.js` 20/20 통과를 별도로 확인했으므로 이 검증에서는 제외했습니다.
+
+**검증 스크립트**: `backend/scripts/verifyFullE2E.js` (신규, 수동 실행용 — `node
+backend/scripts/verifyFullE2E.js`, dev 서버 실기동 + Postgres 필요). 테스트 계정은 실행마다 유니크한
+suffix로 생성되어 재실행 가능. 주의: `authLimiter`가 IP당 15분에 실패 5회를 허용하는데 이 스크립트가
+회당 의도적 실패 3회(중복가입 409, 오답 로그인 401, 없는 아이디 401)를 만들므로, 15분 내 반복 실행 시
+음성 케이스가 429로 뜰 수 있음(회귀 아님 — 스크립트가 429를 별도 표기).
+
+**결과: 44개 체크 전부 통과 (`=== RESULT: 44 passed, 0 failed ===`), 회귀 0건. 서버 로그에도 unhandled
+error 없음.**
+
+| 영역 | 확인한 것 | 결과 |
+|---|---|---|
+| 인증 | 가입 201 → 중복 아이디 409 → 로그아웃 204(Set-Cookie로 `tsp.sid`/`tsp.csrf` 둘 다 1970 만료 확인) → 재로그인 → `/api/users/me` 200. 오답 비밀번호와 없는 아이디가 동일한 401 + **동일 에러 메시지**(계정 열거 방지 유지) | 11/11 |
+| CSRF | 세션 쿠키만 있고 `x-csrf-token` 없는 POST → 403 + `code: "CSRF_INVALID"` | 1/1 |
+| 상품 | multipart(실 PNG) 등록 201 → sharp 재인코딩으로 `.jpg` 저장 + `/uploads/products/*` 서빙(image/jpeg) → 목록 노출(최소노출 id+name 유지) → 상세 → 본인 수정 200 → **타 계정 PATCH 403(IDOR, CSRF 403과 구분됨) + 데이터 불변** → `search=` 매칭/무매칭 → **limit=1 커서 페이지네이션**(nextCursor=마지막 항목 id, 2페이지 무중복, 마지막 페이지 null — 리팩토링된 `lib/pagination.ts` 검증) → 삭제 204 + 상세 404 | 19/19 |
+| 채팅 | 1:1 방 생성 201 → 같은 pair 재요청 시 동일 room id(멱등) → 세션 쿠키만으로 Socket.IO 인증 연결 → `join_room`/`send_message` ack → 상대 실시간 수신(sender 서버 재유도 확인) → REST 히스토리 일치 | 7/7 |
+| 신고/휴면 | 신고자 3명(USER_REPORT_THRESHOLD=3) → 대상 REST 즉시 401 → **살아있는 Socket.IO 연결이 `io server disconnect` 사유로 서버에 의해 강제 종료**(리뷰 C-1 회귀 없음) → 동일 신고자 재신고 409(`@@unique([reporterId, targetType, targetId])`) | 5/5 |
+| 헬스체크 | `/health` 200 `{ok:true}`, `/health/ready` 200 `{status:"ready"}` | 2/2 |
+
+검색 파라미터는 §15에 기록한 대로 `search=`가 계약입니다(구두로 `q=`로 불리곤 하는데, API·프론트 모두
+`search`를 사용 — 이번 검증도 `search=` 기준).
+
+**결론**: refactor/agile-v2 리팩토링으로 인한 기능/보안 회귀 없음. Sprint 3 착수 가능.

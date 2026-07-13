@@ -1,0 +1,9 @@
+# NOTE: the canonical compose build uses the REPO ROOT as context (see
+# backend/Dockerfile header) — in that flow the root .dockerignore applies.
+# This file covers anyone building with backend/ itself as the context.
+node_modules
+dist
+uploads
+.env
+.env.*
+*.log

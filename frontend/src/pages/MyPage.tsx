@@ -3,23 +3,18 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { Badge } from "../components/Badge";
 import { Toast } from "../components/Toast";
+import { Loading } from "../components/Loading";
+import { useAsyncData } from "../hooks/useAsyncData";
+import { useFormSubmit } from "../hooks/useFormSubmit";
 import * as userApi from "../api/users";
 import * as productApi from "../api/products";
 import * as walletApi from "../api/wallet";
-import { ApiError } from "../api/client";
-import type { Product, Transfer } from "../types";
+import type { Product } from "../types";
 
 function WalletTab() {
   const { user } = useAuth();
-  const [transactions, setTransactions] = useState<Transfer[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    walletApi
-      .listTransactions()
-      .then(({ transactions: list }) => setTransactions(list))
-      .finally(() => setLoading(false));
-  }, []);
+  const { data, loading } = useAsyncData(() => walletApi.listTransactions(), []);
+  const transactions = data?.transactions ?? [];
 
   if (!user) return null;
 
@@ -34,7 +29,7 @@ function WalletTab() {
       </div>
       <h3>송금/수신 내역</h3>
       {loading ? (
-        <p>불러오는 중...</p>
+        <Loading />
       ) : transactions.length === 0 ? (
         <div className="empty-state">아직 내역이 없습니다.</div>
       ) : (
@@ -70,21 +65,18 @@ function ProductRow({ product, onChanged }: { product: Product; onChanged: () =>
   const [name, setName] = useState(product.name);
   const [price, setPrice] = useState(String(product.price));
   const [description, setDescription] = useState(product.description);
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const { submitting: saving, error, submit } = useFormSubmit("수정에 실패했습니다.");
 
-  async function handleSave() {
-    setSaving(true);
-    setError(null);
-    try {
-      await productApi.updateProduct(product.id, { name: name.trim(), price: Number(price), description: description.trim() });
+  function handleSave() {
+    void submit(async () => {
+      await productApi.updateProduct(product.id, {
+        name: name.trim(),
+        price: Number(price),
+        description: description.trim(),
+      });
       setEditing(false);
       onChanged();
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "수정에 실패했습니다.");
-    } finally {
-      setSaving(false);
-    }
+    });
   }
 
   async function handleDelete() {
@@ -138,7 +130,7 @@ export function MyPage() {
   const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [newPasswordConfirm, setNewPasswordConfirm] = useState("");
-  const [infoError, setInfoError] = useState<string | null>(null);
+  const { error: infoError, setError: setInfoError, submit: submitInfo } = useFormSubmit("저장에 실패했습니다.");
   const [toast, setToast] = useState<string | null>(null);
   const [products, setProducts] = useState<Product[]>([]);
 
@@ -154,10 +146,9 @@ export function MyPage() {
     if (tab === "products") loadProducts();
   }, [tab]);
 
-  async function handleSaveInfo(e: FormEvent) {
+  function handleSaveInfo(e: FormEvent) {
     e.preventDefault();
-    setInfoError(null);
-    try {
+    void submitInfo(async () => {
       await userApi.updateBio(bio);
       if (newPassword) {
         if (newPassword !== newPasswordConfirm) {
@@ -171,9 +162,7 @@ export function MyPage() {
       }
       await refreshUser();
       setToast("저장되었습니다.");
-    } catch (err) {
-      setInfoError(err instanceof ApiError ? err.message : "저장에 실패했습니다.");
-    }
+    });
   }
 
   if (!user) return null;

@@ -6,7 +6,7 @@ import { HttpError } from "../lib/HttpError";
 import { ALLOWED_MIME } from "./multer";
 import { detectImageMime } from "./magicBytes";
 
-export const UPLOAD_DIR = path.join(__dirname, "..", "..", "uploads", "products");
+const UPLOAD_DIR = path.join(__dirname, "..", "..", "uploads", "products");
 
 // Client-reported extension/MIME (checked by multer's fileFilter) are only
 // hints. Here we verify the actual file bytes (magic-byte sniff) and then

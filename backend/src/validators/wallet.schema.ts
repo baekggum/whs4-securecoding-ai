@@ -19,5 +19,3 @@ export const transactionsQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(20),
   direction: z.enum(["sent", "received", "all"]).default("all"),
 });
-
-export type TransferInput = z.infer<typeof transferSchema>;

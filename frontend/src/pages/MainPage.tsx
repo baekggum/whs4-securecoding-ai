@@ -1,56 +1,48 @@
-import { useEffect, useState, type FormEvent } from "react";
+import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { ProductCard } from "../components/ProductCard";
 import { ChatPanel } from "../components/ChatPanel";
+import { Loading } from "../components/Loading";
+import { useAsyncData } from "../hooks/useAsyncData";
 import * as productApi from "../api/products";
 import * as chatApi from "../api/chat";
-import type { ProductListItem } from "../types";
 
 export function MainPage() {
   const { user } = useAuth();
-  const [products, setProducts] = useState<ProductListItem[]>([]);
-  const [cursor, setCursor] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [globalRoomId, setGlobalRoomId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
   const [appliedSearch, setAppliedSearch] = useState("");
 
-  useEffect(() => {
-    setLoading(true);
-    productApi
-      .listProducts(undefined, undefined, appliedSearch || undefined)
-      .then(({ items, nextCursor }) => {
-        setProducts(items);
-        setCursor(nextCursor);
-      })
-      .finally(() => setLoading(false));
-  }, [appliedSearch]);
+  const {
+    data: productPage,
+    setData: setProductPage,
+    loading,
+  } = useAsyncData(() => productApi.listProducts({ search: appliedSearch || undefined }), [appliedSearch]);
+  const products = productPage?.items ?? [];
+  const cursor = productPage?.nextCursor ?? null;
+
+  // Room lookup failures fall back to "no global room" (.catch 폴백) — the
+  // product list must render even when the chat lookup is unauthorized.
+  const { data: globalRoomId } = useAsyncData(
+    () =>
+      user
+        ? chatApi
+            .listMyRooms()
+            .then(({ rooms }) => rooms.find((r) => r.type === "global")?.id ?? null)
+            .catch(() => null)
+        : Promise.resolve(null),
+    [user]
+  );
 
   function handleSearchSubmit(e: FormEvent) {
     e.preventDefault();
     setAppliedSearch(search.trim());
   }
 
-  useEffect(() => {
-    if (!user) {
-      setGlobalRoomId(null);
-      return;
-    }
-    chatApi
-      .listMyRooms()
-      .then(({ rooms }) => {
-        const globalRoom = rooms.find((r) => r.type === "global");
-        setGlobalRoomId(globalRoom?.id ?? null);
-      })
-      .catch(() => setGlobalRoomId(null));
-  }, [user]);
-
   async function loadMore() {
     if (!cursor) return;
-    const { items, nextCursor } = await productApi.listProducts(cursor, undefined, appliedSearch || undefined);
-    setProducts((prev) => [...prev, ...items]);
-    setCursor(nextCursor);
+    const { items, nextCursor } = await productApi.listProducts({ cursor, search: appliedSearch || undefined });
+    setProductPage((prev) => ({ items: [...(prev?.items ?? []), ...items], nextCursor }));
   }
 
   return (
@@ -81,7 +73,7 @@ export function MainPage() {
           )}
         </form>
         {loading ? (
-          <p>불러오는 중...</p>
+          <Loading />
         ) : products.length === 0 ? (
           <div className="empty-state">{appliedSearch ? "검색 결과가 없습니다." : "등록된 상품이 없습니다."}</div>
         ) : (

@@ -1,6 +1,8 @@
 import type { NextFunction, Request, Response } from "express";
+import type { User } from "@prisma/client";
 import { prisma } from "../prisma";
 import { asyncHandler } from "../lib/asyncHandler";
+import { HttpError } from "../lib/HttpError";
 
 // Loads the current user (if any) from the session on every request, and
 // enforces that dormant accounts lose access immediately — this is why the
@@ -30,4 +32,16 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
     return;
   }
   next();
+}
+
+// Type-safe accessor for handlers mounted behind requireAuth: returns the
+// user attachCurrentUser loaded from the DB, without the `req.currentUser!`
+// non-null assertions previously scattered across every route file. The
+// throw is only a safety net for a handler mistakenly mounted without
+// requireAuth — it mirrors requireAuth's 401 response exactly.
+export function requireCurrentUser(req: Request): User {
+  if (!req.currentUser) {
+    throw new HttpError(401, "로그인이 필요합니다.");
+  }
+  return req.currentUser;
 }

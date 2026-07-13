@@ -182,11 +182,6 @@ select {
   color: var(--color-badge-blocked);
 }
 
-.badge-danger {
-  background: #fde8e8;
-  color: var(--color-danger);
-}
-
 .chat-panel {
   display: flex;
   flex-direction: column;

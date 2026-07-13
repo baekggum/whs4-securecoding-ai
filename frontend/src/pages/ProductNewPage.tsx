@@ -1,7 +1,7 @@
 import { useState, type ChangeEvent, type FormEvent } from "react";
 import { useNavigate } from "react-router-dom";
+import { useFormSubmit } from "../hooks/useFormSubmit";
 import * as productApi from "../api/products";
-import { ApiError } from "../api/client";
 
 const ACCEPTED_TYPES = ["image/jpeg", "image/png", "image/webp"];
 const MAX_SIZE_BYTES = 5 * 1024 * 1024;
@@ -13,8 +13,7 @@ export function ProductNewPage() {
   const [description, setDescription] = useState("");
   const [image, setImage] = useState<File | null>(null);
   const [preview, setPreview] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const { submitting, error, setError, submit } = useFormSubmit("상품 등록에 실패했습니다.");
 
   function handleFileChange(e: ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0] ?? null;
@@ -40,12 +39,10 @@ export function ProductNewPage() {
 
   const canSubmit = name.trim().length > 0 && description.trim().length > 0 && price !== "" && Number(price) >= 0 && !!image;
 
-  async function handleSubmit(e: FormEvent) {
+  function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!canSubmit || !image) return;
-    setSubmitting(true);
-    setError(null);
-    try {
+    void submit(async () => {
       const { product } = await productApi.createProduct({
         name: name.trim(),
         description: description.trim(),
@@ -53,11 +50,7 @@ export function ProductNewPage() {
         image,
       });
       navigate(`/products/${product.id}`);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "상품 등록에 실패했습니다.");
-    } finally {
-      setSubmitting(false);
-    }
+    });
   }
 
   return (

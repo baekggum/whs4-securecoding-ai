@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { useFormSubmit } from "../hooks/useFormSubmit";
 import * as reportApi from "../api/reports";
-import { ApiError } from "../api/client";
 import type { ReportTargetType } from "../types";
 
 const REASON_CATEGORIES = ["허위매물", "사기 의심", "부적절한 게시물", "욕설 / 비방", "기타"];
@@ -14,28 +14,21 @@ export function ReportPage() {
 
   const [category, setCategory] = useState(REASON_CATEGORIES[0]);
   const [detail, setDetail] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
+  const { submitting, error, submit } = useFormSubmit("신고 접수에 실패했습니다.");
 
   const canSubmit = detail.trim().length >= 10 && !!targetId;
 
-  async function handleSubmit(e: FormEvent) {
+  function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
     if (!confirm("허위 신고 시 제재될 수 있습니다. 신고를 접수하시겠습니까?")) return;
 
-    setSubmitting(true);
-    setError(null);
-    try {
+    void submit(async () => {
       const reason = `[${category}] ${detail.trim()}`;
       await reportApi.createReport(targetType, targetId, reason);
       setDone(true);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "신고 접수에 실패했습니다.");
-    } finally {
-      setSubmitting(false);
-    }
+    });
   }
 
   if (!targetId) {

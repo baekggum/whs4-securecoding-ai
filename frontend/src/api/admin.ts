@@ -1,4 +1,4 @@
-import { api } from "./client";
+import { api, buildQuery } from "./client";
 import type { AdminReport, AdminUserSummary, Product, Transfer } from "../types";
 
 export function listUsers() {
@@ -26,8 +26,7 @@ export function unblockProduct(id: string) {
 }
 
 export function listReports(resolved?: boolean) {
-  const query = resolved === undefined ? "" : `?resolved=${resolved}`;
-  return api.get<{ items: AdminReport[]; nextCursor: string | null }>(`/api/admin/reports${query}`);
+  return api.get<{ items: AdminReport[]; nextCursor: string | null }>(`/api/admin/reports${buildQuery({ resolved })}`);
 }
 
 export function resolveReport(id: string) {

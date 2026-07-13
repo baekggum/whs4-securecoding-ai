@@ -5,6 +5,7 @@ import cors from "cors";
 import compression from "compression";
 import cookieParser from "cookie-parser";
 import { FRONTEND_ORIGINS } from "./env";
+import { prisma } from "./prisma";
 import { sessionMiddleware } from "./session";
 import { attachCurrentUser } from "./middleware/auth";
 import { csrfProtection } from "./middleware/csrf";
@@ -37,6 +38,27 @@ export function createApp() {
     })
   );
 
+  // Health endpoints are registered before the session middleware and rate
+  // limiter (deploy-handoff.md B-1): container/LB probes must not consume
+  // globalLimiter quota (which could 429 a busy uptime monitor behind one
+  // proxy IP) or trigger a pointless session-store lookup per probe.
+
+  // Liveness: process is up. Response shape unchanged.
+  app.get("/health", (_req, res) => res.json({ ok: true }));
+
+  // Readiness: DB is reachable too (deploy-handoff.md B-2). Errors are
+  // handled here rather than leaking to errorHandler, so a probe failure is
+  // a plain 503 instead of a logged "unhandled" 500.
+  app.get("/health/ready", async (_req, res) => {
+    try {
+      await prisma.$queryRaw`SELECT 1`;
+      res.json({ status: "ready" });
+    } catch (err) {
+      console.error("[health/ready] DB check failed:", err);
+      res.status(503).json({ status: "unavailable" });
+    }
+  });
+
   app.use(
     cors({
       origin: FRONTEND_ORIGINS,
@@ -65,8 +87,6 @@ export function createApp() {
   );
 
   app.use("/api", csrfProtection, apiRouter);
-
-  app.get("/health", (_req, res) => res.json({ ok: true }));
 
   app.use(notFoundHandler);
   app.use(errorHandler);

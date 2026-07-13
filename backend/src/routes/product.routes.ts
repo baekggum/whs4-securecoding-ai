@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { asyncHandler } from "../lib/asyncHandler";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, requireCurrentUser } from "../middleware/auth";
 import {
   createProductSchema,
   productIdParamSchema,
@@ -27,7 +27,7 @@ productRouter.post(
 
     const imagePath = await processAndStoreProductImage(req.file.buffer);
 
-    const product = await productService.createProduct(req.currentUser!.id, {
+    const product = await productService.createProduct(requireCurrentUser(req).id, {
       ...input,
       imagePath,
     });
@@ -49,7 +49,7 @@ productRouter.get(
   "/mine",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const products = await productService.listMyProducts(req.currentUser!.id);
+    const products = await productService.listMyProducts(requireCurrentUser(req).id);
     res.json({ products });
   })
 );
@@ -72,7 +72,7 @@ productRouter.patch(
   asyncHandler(async (req, res) => {
     const { id } = productIdParamSchema.parse(req.params);
     const input = updateProductSchema.parse(req.body);
-    const product = await productService.updateProduct(id, req.currentUser!.id, input);
+    const product = await productService.updateProduct(id, requireCurrentUser(req).id, input);
     res.json({ product });
   })
 );
@@ -82,7 +82,7 @@ productRouter.delete(
   requireAuth,
   asyncHandler(async (req, res) => {
     const { id } = productIdParamSchema.parse(req.params);
-    await productService.deleteProduct(id, req.currentUser!.id);
+    await productService.deleteProduct(id, requireCurrentUser(req).id);
     res.status(204).send();
   })
 );

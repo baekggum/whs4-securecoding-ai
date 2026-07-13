@@ -1,6 +1,7 @@
 import { prisma } from "../prisma";
 import { HttpError } from "../lib/HttpError";
 import { deleteProductImage } from "../upload/imageProcessor";
+import { cursorPageArgs, toCursorPage } from "../lib/pagination";
 
 interface CreateProductInput {
   name: string;
@@ -43,15 +44,10 @@ export async function listProducts(cursor: string | undefined, limit: number, se
     },
     select: { id: true, name: true },
     orderBy: { createdAt: "desc" },
-    take: limit + 1,
-    ...(cursor ? { skip: 1, cursor: { id: cursor } } : {}),
+    ...cursorPageArgs(cursor, limit),
   });
 
-  const hasMore = products.length > limit;
-  const items = hasMore ? products.slice(0, limit) : products;
-  const nextCursor = hasMore ? items[items.length - 1]?.id ?? null : null;
-
-  return { items, nextCursor };
+  return toCursorPage(products, limit);
 }
 
 export async function listMyProducts(sellerId: string) {

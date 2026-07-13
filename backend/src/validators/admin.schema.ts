@@ -10,7 +10,12 @@ export const adminListQuerySchema = z.object({
 });
 
 export const adminReportListQuerySchema = adminListQuerySchema.extend({
-  resolved: z.enum(["true", "false"]).optional(),
+  // Query strings are always strings — accept only the two literal values
+  // and hand the route a real boolean (undefined = no filter).
+  resolved: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === "true")),
 });
 
 export const adminTransferListQuerySchema = adminListQuerySchema.extend({

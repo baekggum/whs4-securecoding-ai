@@ -1,5 +1,7 @@
 import { Router } from "express";
+import type { Request } from "express";
 import { asyncHandler } from "../lib/asyncHandler";
+import { HttpError } from "../lib/HttpError";
 import { loginSchema, signupSchema } from "../validators/auth.schema";
 import * as authService from "../services/auth.service";
 import { requireAuth } from "../middleware/auth";
@@ -10,9 +12,15 @@ import { serializeSelfUser } from "../utils/constants";
 
 export const authRouter = Router();
 
-function regenerateSession(req: import("express").Request): Promise<void> {
+function regenerateSession(req: Request): Promise<void> {
   return new Promise((resolve, reject) => {
     req.session.regenerate((err) => (err ? reject(err) : resolve()));
+  });
+}
+
+function destroySession(req: Request): Promise<void> {
+  return new Promise((resolve, reject) => {
+    req.session.destroy((err) => (err ? reject(err) : resolve()));
   });
 }
 
@@ -50,16 +58,16 @@ authRouter.post(
   "/logout",
   requireAuth,
   asyncHandler(async (req, res) => {
-    req.session.destroy((err) => {
-      if (err) {
-        res.status(500).json({ error: "로그아웃 처리 중 오류가 발생했습니다." });
-        return;
-      }
-      res.clearCookie(env.SESSION_COOKIE_NAME, { path: "/" });
-      // Force the next login to obtain a fresh CSRF token rather than
-      // reusing one issued to the just-ended session's browser tab.
-      res.clearCookie(CSRF_COOKIE_NAME, { path: "/" });
-      res.status(204).send();
-    });
+    try {
+      await destroySession(req);
+    } catch {
+      throw new HttpError(500, "로그아웃 처리 중 오류가 발생했습니다.");
+    }
+
+    res.clearCookie(env.SESSION_COOKIE_NAME, { path: "/" });
+    // Force the next login to obtain a fresh CSRF token rather than
+    // reusing one issued to the just-ended session's browser tab.
+    res.clearCookie(CSRF_COOKIE_NAME, { path: "/" });
+    res.status(204).send();
   })
 );

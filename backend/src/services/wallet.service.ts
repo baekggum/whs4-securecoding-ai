@@ -1,6 +1,7 @@
 import { Prisma, type Transfer } from "@prisma/client";
 import { prisma } from "../prisma";
 import { HttpError } from "../lib/HttpError";
+import { cursorPageArgs, toCursorPage } from "../lib/pagination";
 
 // Postgres deadlock error, surfaced by Prisma's interactive transactions as
 // P2034 ("Transaction failed due to a write conflict or a deadlock. Please
@@ -33,11 +34,6 @@ function serializeTransfer(t: Transfer): TransferDTO {
     receiverBalanceAfter: t.receiverBalanceAfter.toString(),
     createdAt: t.createdAt,
   };
-}
-
-export async function getBalance(userId: string): Promise<string> {
-  const wallet = await prisma.wallet.findUniqueOrThrow({ where: { userId } });
-  return wallet.balance.toString();
 }
 
 async function debitAndSnapshot(tx: Prisma.TransactionClient, userId: string, amount: number): Promise<bigint> {
@@ -195,13 +191,9 @@ export async function listAllTransactions(options: ListAllTransactionsOptions) {
       ...(options.before ? { createdAt: { lt: new Date(options.before) } } : {}),
     },
     orderBy: { createdAt: "desc" },
-    take: options.limit + 1,
-    ...(options.cursor ? { skip: 1, cursor: { id: options.cursor } } : {}),
+    ...cursorPageArgs(options.cursor, options.limit),
   });
 
-  const hasMore = transfers.length > options.limit;
-  const items = hasMore ? transfers.slice(0, options.limit) : transfers;
-  const nextCursor = hasMore ? items[items.length - 1]?.id ?? null : null;
-
+  const { items, nextCursor } = toCursorPage(transfers, options.limit);
   return { items: items.map(serializeTransfer), nextCursor };
 }

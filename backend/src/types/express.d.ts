@@ -3,8 +3,10 @@ import type { User } from "@prisma/client";
 declare global {
   namespace Express {
     interface Request {
-      // Populated by requireAuth after verifying the session and loading
-      // the current user's status from the database.
+      // Populated by attachCurrentUser (middleware/auth.ts) after loading
+      // the session user's current status/role from the database on every
+      // request. Handlers behind requireAuth should read it through
+      // requireCurrentUser(req) instead of a non-null assertion.
       currentUser?: User;
     }
   }

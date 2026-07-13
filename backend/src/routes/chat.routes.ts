@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { asyncHandler } from "../lib/asyncHandler";
-import { requireAuth } from "../middleware/auth";
+import { requireAuth, requireCurrentUser } from "../middleware/auth";
 import { messagesQuerySchema, roomIdParamSchema, startDirectRoomSchema } from "../validators/chat.schema";
 import * as chatService from "../services/chat.service";
 
@@ -10,7 +10,7 @@ chatRouter.get(
   "/rooms",
   requireAuth,
   asyncHandler(async (req, res) => {
-    const rooms = await chatService.listMyRooms(req.currentUser!.id);
+    const rooms = await chatService.listMyRooms(requireCurrentUser(req).id);
     res.json({ rooms });
   })
 );
@@ -20,7 +20,7 @@ chatRouter.post(
   requireAuth,
   asyncHandler(async (req, res) => {
     const { targetUserId } = startDirectRoomSchema.parse(req.body);
-    const room = await chatService.startDirectRoom(req.currentUser!.id, targetUserId);
+    const room = await chatService.startDirectRoom(requireCurrentUser(req).id, targetUserId);
     res.status(201).json({ room });
   })
 );
@@ -31,7 +31,7 @@ chatRouter.get(
   asyncHandler(async (req, res) => {
     const { id } = roomIdParamSchema.parse(req.params);
     const { before, limit } = messagesQuerySchema.parse(req.query);
-    const messages = await chatService.getRoomMessages(id, req.currentUser!.id, before, limit);
+    const messages = await chatService.getRoomMessages(id, requireCurrentUser(req).id, before, limit);
     res.json({ messages });
   })
 );

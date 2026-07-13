@@ -1,0 +1,90 @@
+# 배포 시뮬레이션용 Docker Compose (개발용 아님 — 개발은 README의 dev 서버 사용).
+#
+#   cp .env.example .env   # 시크릿 채우기 (SESSION_SECRET / CSRF_SECRET / POSTGRES_PASSWORD)
+#   docker compose up -d --build
+#   → http://localhost:8080 (HTTP_PORT로 변경 가능)
+#
+# 토폴로지: 브라우저 → frontend(nginx, 정적 SPA + /api·/uploads·/socket.io 프록시)
+#          → backend(Express+Socket.IO, 기동 시 prisma migrate deploy) → postgres.
+# backend/postgres 포트는 호스트에 공개하지 않음 — 진입점은 frontend 하나뿐.
+#
+# 변수 보간은 이 파일 옆의 .env에서 읽음 (.env.example 참고).
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}
+      POSTGRES_DB: ${POSTGRES_DB:-tiny_secondhand}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      # $$ = 컨테이너 런타임 환경변수 사용 (compose 보간 아님)
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  backend:
+    build:
+      context: .                      # 루트 컨텍스트 필수 — npm workspaces 단일 lockfile
+      dockerfile: backend/Dockerfile
+    # 서버는 uncaughtException 시 의도적으로 프로세스를 종료함(README "프로세스 매니저 필수").
+    # restart 정책이 그 supervisor 역할.
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy    # entrypoint의 migrate deploy가 DB를 즉시 필요로 함
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in .env}@postgres:5432/${POSTGRES_DB:-tiny_secondhand}?schema=public
+      # 브라우저가 실제로 접속하는 공개 오리진 (CORS + Socket.IO 허용 오리진 + CSP connect-src)
+      FRONTEND_ORIGIN: ${PUBLIC_ORIGIN:-http://localhost:8080}
+      SESSION_SECRET: ${SESSION_SECRET:?SESSION_SECRET must be set in .env}
+      SESSION_COOKIE_NAME: ${SESSION_COOKIE_NAME:-tsp.sid}
+      SESSION_MAX_AGE_MS: ${SESSION_MAX_AGE_MS:-604800000}
+      CSRF_SECRET: ${CSRF_SECRET:?CSRF_SECRET must be set in .env}
+      # true는 HTTPS(TLS 종료 프록시) 뒤에서만! 평문 HTTP에서 true면 브라우저가
+      # Secure 쿠키를 조용히 버려 로그인이 전부 실패함 (backend/src/env.ts 주석 참고).
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      PRODUCT_REPORT_THRESHOLD: ${PRODUCT_REPORT_THRESHOLD:-5}
+      USER_REPORT_THRESHOLD: ${USER_REPORT_THRESHOLD:-5}
+      BCRYPT_SALT_ROUNDS: ${BCRYPT_SALT_ROUNDS:-12}
+      SIGNUP_BONUS_POINTS: ${SIGNUP_BONUS_POINTS:-10000}
+      MAX_TRANSFER_AMOUNT: ${MAX_TRANSFER_AMOUNT:-1000000}
+    volumes:
+      # 상품 이미지 영속화 — app.ts가 /app/uploads를 정적 서빙, imageProcessor가
+      # /app/uploads/products에 기록. 컨테이너 재생성에도 이미지 유지.
+      - uploads-data:/app/uploads
+    healthcheck:
+      # 이미지에 curl/wget이 없으므로 Node 20 내장 fetch 사용.
+      # /health/ready는 prisma SELECT 1까지 확인 (200 ready / 503 unavailable)
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4000/health/ready').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s               # 첫 기동 시 migrate deploy 시간 포함
+
+  frontend:
+    build:
+      context: .                      # 루트 컨텍스트 필수 — npm workspaces 단일 lockfile
+      dockerfile: frontend/Dockerfile
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy    # 마이그레이션 완료 전 502 방지
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  postgres-data:
+  uploads-data:

@@ -1,0 +1,18 @@
+# Applies to BOTH image builds: docker-compose.yml builds backend/Dockerfile
+# and frontend/Dockerfile with the repo root as context (npm workspaces —
+# the shared package-lock.json lives here). Keeping node_modules & friends out
+# of the context matters both for speed and for correctness: locally installed
+# node_modules contain native binaries (sharp, bcrypt) for the HOST platform
+# and must never leak into an image.
+.git
+.claude
+node_modules
+**/node_modules
+**/dist
+backend/uploads
+**/.env
+**/.env.*
+**/*.log
+docs
+**/*.md
+docker-compose.yml

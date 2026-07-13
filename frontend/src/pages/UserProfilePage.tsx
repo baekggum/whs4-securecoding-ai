@@ -1,57 +1,48 @@
-import { useEffect, useState } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useParams } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { Badge } from "../components/Badge";
 import { ProductCard } from "../components/ProductCard";
+import { Loading } from "../components/Loading";
+import { useAsyncData } from "../hooks/useAsyncData";
+import { useStartChat } from "../hooks/useStartChat";
 import * as userApi from "../api/users";
 import * as productApi from "../api/products";
-import * as chatApi from "../api/chat";
 import { ApiError } from "../api/client";
-import type { ProductListItem, PublicUser } from "../types";
+import type { ProductListItem } from "../types";
 
 export function UserProfilePage() {
   const { id } = useParams<{ id: string }>();
   const { user } = useAuth();
-  const navigate = useNavigate();
-  const [profile, setProfile] = useState<PublicUser | null>(null);
-  const [products, setProducts] = useState<ProductListItem[]>([]);
-  const [notFound, setNotFound] = useState(false);
-  const [chatError, setChatError] = useState<string | null>(null);
+  const { startChat, error: chatError } = useStartChat();
 
-  useEffect(() => {
-    if (!id) return;
-    setProfile(null);
-    setNotFound(false);
-    userApi
-      .getPublicProfile(id)
-      .then(({ user: u }) => setProfile(u))
-      .catch((err) => {
-        if (err instanceof ApiError && err.status === 404) setNotFound(true);
-        else throw err;
-      });
-    productApi
-      .listProducts(undefined, id)
-      .then(({ items }) => setProducts(items))
-      .catch(() => setProducts([]));
-  }, [id]);
+  const { data, loading, error } = useAsyncData(
+    () => (id ? userApi.getPublicProfile(id) : Promise.resolve(null)),
+    [id]
+  );
+  const profile = data?.user ?? null;
 
-  if (notFound) return <div className="empty-state">사용자를 찾을 수 없습니다.</div>;
-  if (!profile) return <p>불러오는 중...</p>;
+  // Product list failures degrade to an empty list (.catch 폴백) — the
+  // profile itself must stay visible even if the list call is rejected.
+  const { data: productData } = useAsyncData(
+    () =>
+      id
+        ? productApi
+            .listProducts({ sellerId: id })
+            .catch((): { items: ProductListItem[]; nextCursor: string | null } => ({ items: [], nextCursor: null }))
+        : Promise.resolve(null),
+    [id]
+  );
+  const products = productData?.items ?? [];
+
+  if (error instanceof ApiError && error.status === 404) {
+    return <div className="empty-state">사용자를 찾을 수 없습니다.</div>;
+  }
+  if (error) {
+    return <div className="empty-state">프로필을 불러오지 못했습니다. 잠시 후 다시 시도해 주세요.</div>;
+  }
+  if (loading || !profile) return <Loading />;
 
   const isSelf = user?.id === profile.id;
-
-  async function handleStartChat() {
-    if (!user) {
-      navigate("/login");
-      return;
-    }
-    try {
-      const { room } = await chatApi.startDirectRoom(profile!.id);
-      navigate(`/chat/${room.id}`);
-    } catch (err) {
-      setChatError(err instanceof ApiError ? err.message : "채팅을 시작할 수 없습니다.");
-    }
-  }
 
   return (
     <div className="card" style={{ maxWidth: 560, margin: "24px auto", textAlign: "center" }}>
@@ -75,7 +66,7 @@ export function UserProfilePage() {
       ) : (
         <div style={{ display: "flex", gap: 8, justifyContent: "center" }}>
           {profile.status !== "dormant" && (
-            <button className="btn btn-primary" onClick={handleStartChat}>
+            <button className="btn btn-primary" onClick={() => startChat(profile.id)}>
               💬 채팅하기
             </button>
           )}

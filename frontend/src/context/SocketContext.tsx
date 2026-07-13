@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useState, type ReactNode } from "react";
 import { io, type Socket } from "socket.io-client";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "./AuthContext";
@@ -13,13 +13,12 @@ const SocketContext = createContext<Socket | null>(null);
 export function SocketProvider({ children }: { children: ReactNode }) {
   const { user, refreshUser } = useAuth();
   const navigate = useNavigate();
-  const socketRef = useRef<Socket | null>(null);
   const [socket, setSocket] = useState<Socket | null>(null);
 
   useEffect(() => {
+    // The previous effect's cleanup already disconnected any prior socket;
+    // logging out just needs to clear the context value.
     if (!user) {
-      socketRef.current?.disconnect();
-      socketRef.current = null;
       setSocket(null);
       return;
     }
@@ -42,12 +41,10 @@ export function SocketProvider({ children }: { children: ReactNode }) {
       }
     });
 
-    socketRef.current = instance;
     setSocket(instance);
 
     return () => {
       instance.disconnect();
-      socketRef.current = null;
     };
   }, [user, refreshUser, navigate]);
 

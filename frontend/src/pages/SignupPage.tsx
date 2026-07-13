@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { ApiError } from "../api/client";
+import { useFormSubmit } from "../hooks/useFormSubmit";
 
 export function SignupPage() {
   const { signup } = useAuth();
@@ -10,25 +10,18 @@ export function SignupPage() {
   const [password, setPassword] = useState("");
   const [passwordConfirm, setPasswordConfirm] = useState("");
   const [bio, setBio] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const { submitting, error, submit } = useFormSubmit("회원가입에 실패했습니다.");
 
   const passwordMismatch = passwordConfirm.length > 0 && password !== passwordConfirm;
   const canSubmit = username.length >= 3 && password.length >= 8 && !passwordMismatch && !submitting;
 
-  async function handleSubmit(e: FormEvent) {
+  function handleSubmit(e: FormEvent) {
     e.preventDefault();
     if (!canSubmit) return;
-    setSubmitting(true);
-    setError(null);
-    try {
+    void submit(async () => {
       await signup(username, password, bio || undefined);
       navigate("/");
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "회원가입에 실패했습니다.");
-    } finally {
-      setSubmitting(false);
-    }
+    });
   }
 
   return (

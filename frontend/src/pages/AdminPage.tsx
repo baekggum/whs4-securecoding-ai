@@ -1,29 +1,21 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Badge } from "../components/Badge";
+import { Loading } from "../components/Loading";
+import { useAsyncData } from "../hooks/useAsyncData";
 import * as adminApi from "../api/admin";
-import type { AdminReport, AdminUserSummary, Product, Transfer } from "../types";
+import type { AdminUserSummary } from "../types";
 
 function UsersTab() {
-  const [users, setUsers] = useState<AdminUserSummary[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  function load() {
-    setLoading(true);
-    adminApi
-      .listUsers()
-      .then(({ items }) => setUsers(items))
-      .finally(() => setLoading(false));
-  }
-
-  useEffect(load, []);
+  const { data, loading, reload } = useAsyncData(() => adminApi.listUsers(), []);
+  const users = data?.items ?? [];
 
   async function toggle(u: AdminUserSummary) {
     if (u.status === "active") await adminApi.setUserDormant(u.id);
     else await adminApi.activateUser(u.id);
-    load();
+    reload();
   }
 
-  if (loading) return <p>불러오는 중...</p>;
+  if (loading) return <Loading />;
 
   return (
     <div>
@@ -45,31 +37,21 @@ function UsersTab() {
 }
 
 function ProductsTab() {
-  const [products, setProducts] = useState<Product[]>([]);
-  const [loading, setLoading] = useState(true);
-
-  function load() {
-    setLoading(true);
-    adminApi
-      .listProducts()
-      .then(({ items }) => setProducts(items))
-      .finally(() => setLoading(false));
-  }
-
-  useEffect(load, []);
+  const { data, loading, reload } = useAsyncData(() => adminApi.listProducts(), []);
+  const products = data?.items ?? [];
 
   async function handleUnblock(id: string) {
     await adminApi.unblockProduct(id);
-    load();
+    reload();
   }
 
   async function handleDelete(id: string) {
     if (!confirm("이 상품을 강제 삭제하시겠습니까?")) return;
     await adminApi.deleteProduct(id);
-    load();
+    reload();
   }
 
-  if (loading) return <p>불러오는 중...</p>;
+  if (loading) return <Loading />;
 
   return (
     <div>
@@ -98,26 +80,19 @@ function ProductsTab() {
 }
 
 function ReportsTab() {
-  const [reports, setReports] = useState<AdminReport[]>([]);
-  const [loading, setLoading] = useState(true);
   const [showResolved, setShowResolved] = useState(false);
-
-  function load() {
-    setLoading(true);
-    adminApi
-      .listReports(showResolved ? undefined : false)
-      .then(({ items }) => setReports(items))
-      .finally(() => setLoading(false));
-  }
-
-  useEffect(load, [showResolved]);
+  const { data, loading, reload } = useAsyncData(
+    () => adminApi.listReports(showResolved ? undefined : false),
+    [showResolved]
+  );
+  const reports = data?.items ?? [];
 
   async function handleResolve(id: string) {
     await adminApi.resolveReport(id);
-    load();
+    reload();
   }
 
-  if (loading) return <p>불러오는 중...</p>;
+  if (loading) return <Loading />;
 
   return (
     <div>
@@ -151,17 +126,10 @@ function ReportsTab() {
 }
 
 function TransactionsTab() {
-  const [transactions, setTransactions] = useState<Transfer[]>([]);
-  const [loading, setLoading] = useState(true);
+  const { data, loading } = useAsyncData(() => adminApi.listAllTransactions(), []);
+  const transactions = data?.items ?? [];
 
-  useEffect(() => {
-    adminApi
-      .listAllTransactions()
-      .then(({ items }) => setTransactions(items))
-      .finally(() => setLoading(false));
-  }, []);
-
-  if (loading) return <p>불러오는 중...</p>;
+  if (loading) return <Loading />;
 
   return (
     <div>

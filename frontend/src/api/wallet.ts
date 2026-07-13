@@ -1,4 +1,4 @@
-import { api } from "./client";
+import { api, buildQuery } from "./client";
 import type { Transfer } from "../types";
 
 export function transfer(receiverId: string, amount: number, idempotencyKey: string) {
@@ -6,5 +6,5 @@ export function transfer(receiverId: string, amount: number, idempotencyKey: str
 }
 
 export function listTransactions(direction: "sent" | "received" | "all" = "all") {
-  return api.get<{ transactions: Transfer[] }>(`/api/wallet/transactions?direction=${direction}`);
+  return api.get<{ transactions: Transfer[] }>(`/api/wallet/transactions${buildQuery({ direction })}`);
 }

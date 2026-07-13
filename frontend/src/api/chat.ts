@@ -1,4 +1,4 @@
-import { api } from "./client";
+import { api, buildQuery } from "./client";
 import type { ChatMessage, ChatRoomSummary } from "../types";
 
 export function listMyRooms() {
@@ -10,6 +10,5 @@ export function startDirectRoom(targetUserId: string) {
 }
 
 export function getRoomMessages(roomId: string, before?: string) {
-  const query = before ? `?before=${encodeURIComponent(before)}` : "";
-  return api.get<{ messages: ChatMessage[] }>(`/api/chat/rooms/${roomId}/messages${query}`);
+  return api.get<{ messages: ChatMessage[] }>(`/api/chat/rooms/${roomId}/messages${buildQuery({ before })}`);
 }

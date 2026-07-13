@@ -14,6 +14,23 @@ export class ApiError extends Error {
   }
 }
 
+// Maps an unknown thrown value to a user-facing message: server-provided
+// messages (ApiError) pass through, anything else gets the given fallback.
+export function getErrorMessage(err: unknown, fallback: string): string {
+  return err instanceof ApiError ? err.message : fallback;
+}
+
+// Builds "?a=1&b=2" from the defined entries ("" when none) so every api/*
+// module constructs query strings the same way.
+export function buildQuery(params: Record<string, string | number | boolean | undefined>): string {
+  const search = new URLSearchParams();
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) search.set(key, String(value));
+  }
+  const query = search.toString();
+  return query ? `?${query}` : "";
+}
+
 let csrfToken: string | null = null;
 let csrfTokenPromise: Promise<string> | null = null;
 
@@ -96,4 +113,4 @@ export const api = {
     request<T>(path, { method: "POST", body: formData, isFormData: true }),
 };
 
-export { ensureCsrfToken, API_BASE_URL };
+export { API_BASE_URL };

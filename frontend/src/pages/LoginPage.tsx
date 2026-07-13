@@ -1,7 +1,18 @@
 import { useState, type FormEvent } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { useFormSubmit } from "../hooks/useFormSubmit";
 import { ApiError } from "../api/client";
+
+// Login errors are deliberately not the server's raw message: credential
+// failures stay vague (계정 존재 여부 노출 방지) and a 403 means the account
+// was made dormant by accumulated reports.
+function loginErrorMessage(err: unknown): string {
+  if (!(err instanceof ApiError)) return "로그인에 실패했습니다.";
+  return err.status === 403
+    ? "장기간 신고 누적으로 휴면 처리된 계정입니다. 관리자에게 문의해주세요."
+    : "아이디 또는 비밀번호가 올바르지 않습니다.";
+}
 
 export function LoginPage() {
   const { login } = useAuth();
@@ -9,30 +20,15 @@ export function LoginPage() {
   const location = useLocation();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [submitting, setSubmitting] = useState(false);
+  const { submitting, error, submit } = useFormSubmit(loginErrorMessage);
 
-  async function handleSubmit(e: FormEvent) {
+  function handleSubmit(e: FormEvent) {
     e.preventDefault();
-    setSubmitting(true);
-    setError(null);
-    try {
+    void submit(async () => {
       await login(username, password);
       const from = (location.state as { from?: { pathname: string } } | null)?.from;
       navigate(from?.pathname ?? "/", { replace: true });
-    } catch (err) {
-      if (err instanceof ApiError) {
-        if (err.status === 403) {
-          setError("장기간 신고 누적으로 휴면 처리된 계정입니다. 관리자에게 문의해주세요.");
-        } else {
-          setError("아이디 또는 비밀번호가 올바르지 않습니다.");
-        }
-      } else {
-        setError("로그인에 실패했습니다.");
-      }
-    } finally {
-      setSubmitting(false);
-    }
+    });
   }
 
   return (

@@ -1,21 +1,21 @@
-import { useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import { ChatPanel } from "../components/ChatPanel";
+import { useAsyncData } from "../hooks/useAsyncData";
 import * as chatApi from "../api/chat";
-import type { ChatRoomSummary } from "../types";
 
 export function ChatRoomPage() {
   const { roomId } = useParams<{ roomId: string }>();
-  const [room, setRoom] = useState<ChatRoomSummary | null>(null);
 
-  useEffect(() => {
-    chatApi
-      .listMyRooms()
-      .then(({ rooms }) => {
-        setRoom(rooms.find((r) => r.id === roomId) ?? null);
-      })
-      .catch(() => setRoom(null));
-  }, [roomId]);
+  // Lookup failures fall back to a null room (.catch 폴백) — ChatPanel still
+  // renders with the generic title and surfaces its own access error.
+  const { data: room } = useAsyncData(
+    () =>
+      chatApi
+        .listMyRooms()
+        .then(({ rooms }) => rooms.find((r) => r.id === roomId) ?? null)
+        .catch(() => null),
+    [roomId]
+  );
 
   if (!roomId) return null;
 
